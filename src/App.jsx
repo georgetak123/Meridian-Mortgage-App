@@ -1,4 +1,193 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback } from "react";
+import { createClient } from "@supabase/supabase-js";
+
+// ── Supabase client ──────────────────────────────────────────────────────────
+const SUPA_URL  = import.meta.env.VITE_SUPABASE_URL  || "";
+const SUPA_KEY  = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
+const supabase  = SUPA_URL && SUPA_KEY ? createClient(SUPA_URL, SUPA_KEY) : null;
+
+// ── Storage adapter — drop-in replacement for window.storage ─────────────────
+// All data is scoped per authenticated user via RLS.
+// Files (docs/photos) go to Supabase Storage; everything else to user_storage table.
+const supaStorage = {
+  async get(key) {
+    if (!supabase) return null;
+    try {
+      const { data, error } = await supabase
+        .from("user_storage")
+        .select("value")
+        .eq("key", key)
+        .maybeSingle();
+      if (error || !data) return null;
+      return { value: data.value };
+    } catch { return null; }
+  },
+  async set(key, value) {
+    if (!supabase) return null;
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return null;
+      const { error } = await supabase
+        .from("user_storage")
+        .upsert({ user_id: user.id, key, value }, { onConflict: "user_id,key" });
+      return error ? null : { key, value };
+    } catch { return null; }
+  },
+  async delete(key) {
+    if (!supabase) return null;
+    try {
+      const { error } = await supabase
+        .from("user_storage")
+        .delete()
+        .eq("key", key);
+      return error ? null : { key, deleted: true };
+    } catch { return null; }
+  },
+  // File upload → Supabase Storage, returns public-ish URL for the session
+  async uploadFile(path, blob, contentType) {
+    if (!supabase) return null;
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return null;
+      const fullPath = `${user.id}/${path}`;
+      const { error } = await supabase.storage
+        .from("meridian-files")
+        .upload(fullPath, blob, { contentType, upsert: true });
+      if (error) return null;
+      return fullPath;
+    } catch { return null; }
+  },
+  async getFileURL(path) {
+    if (!supabase) return null;
+    try {
+      const { data } = await supabase.storage
+        .from("meridian-files")
+        .createSignedUrl(path, 3600);
+      return data?.signedUrl || null;
+    } catch { return null; }
+  },
+  async deleteFile(path) {
+    if (!supabase) return null;
+    try {
+      await supabase.storage.from("meridian-files").remove([path]);
+    } catch {}
+  },
+};
+
+// ── Auth wrapper component ────────────────────────────────────────────────────
+function AuthGate({ children }) {
+  const [session, setSession] = useState(undefined); // undefined = loading
+  const [authMode, setAuthMode] = useState("login"); // login | signup | reset
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!supabase) { setSession(null); return; }
+    supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // No Supabase configured — run in local mode (window.storage fallback)
+  if (!supabase || (SUPA_URL === "" && SUPA_KEY === "")) {
+    return children;
+  }
+
+  // Loading
+  if (session === undefined) {
+    return (
+      <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"#0f172a"}}>
+        <div style={{fontSize:13,color:"#475569"}}>Loading…</div>
+      </div>
+    );
+  }
+
+  // Authenticated — render app
+  if (session) return children;
+
+  // ── Auth forms ──
+  const submit = async () => {
+    setBusy(true); setError(""); setInfo("");
+    try {
+      if (authMode === "login") {
+        const { error: e } = await supabase.auth.signInWithPassword({ email, password });
+        if (e) setError(e.message);
+      } else if (authMode === "signup") {
+        const { error: e } = await supabase.auth.signUp({ email, password, options: { data: { full_name: name } } });
+        if (e) setError(e.message);
+        else setInfo("Check your email to confirm your account, then log in.");
+      } else {
+        const { error: e } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.href });
+        if (e) setError(e.message);
+        else setInfo("Password reset email sent. Check your inbox.");
+      }
+    } catch(e) { setError(e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"#0f172a",fontFamily:"Inter,system-ui,sans-serif"}}>
+      <div style={{width:"100%",maxWidth:400,padding:32}}>
+        {/* Brand */}
+        <div style={{marginBottom:36,textAlign:"center"}}>
+          <div style={{width:52,height:52,background:"linear-gradient(145deg,#c9a84c,#f0d070,#c9a84c)",borderRadius:14,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,fontWeight:800,color:"#0f172a",fontStyle:"italic",margin:"0 auto 16px",boxShadow:"0 4px 20px rgba(212,175,55,.3)"}}>M</div>
+          <div style={{fontSize:22,fontWeight:800,color:"#f1f5f9",letterSpacing:"-.02em"}}>Meridian Properties</div>
+          <div style={{fontSize:11,color:"#475569",marginTop:4,letterSpacing:".12em",textTransform:"uppercase"}}>Mortgage Portfolio OS</div>
+        </div>
+
+        {/* Card */}
+        <div style={{background:"#1e293b",border:"1px solid rgba(255,255,255,.07)",borderRadius:16,padding:"28px 28px 24px",boxShadow:"0 20px 60px rgba(0,0,0,.4)"}}>
+          <div style={{fontSize:16,fontWeight:700,color:"#f1f5f9",marginBottom:4}}>
+            {authMode==="login"?"Sign in":authMode==="signup"?"Create account":"Reset password"}
+          </div>
+          <div style={{fontSize:11,color:"#64748b",marginBottom:22}}>
+            {authMode==="login"?"Access your portfolio dashboard":authMode==="signup"?"Set up your team account":"We'll email you a reset link"}
+          </div>
+
+          {authMode==="signup"&&<div style={{marginBottom:12}}>
+            <label style={{fontSize:11,fontWeight:600,color:"#94a3b8",display:"block",marginBottom:5,letterSpacing:".04em"}}>FULL NAME</label>
+            <input value={name} onChange={e=>setName(e.target.value)} placeholder="Maria Lopez"
+              style={{width:"100%",padding:"10px 14px",background:"#0f172a",border:"1px solid rgba(255,255,255,.1)",borderRadius:9,fontSize:13,color:"#f1f5f9",outline:"none"}}/>
+          </div>}
+
+          <div style={{marginBottom:12}}>
+            <label style={{fontSize:11,fontWeight:600,color:"#94a3b8",display:"block",marginBottom:5,letterSpacing:".04em"}}>EMAIL</label>
+            <input value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@meridian.com" type="email" onKeyDown={e=>e.key==="Enter"&&submit()}
+              style={{width:"100%",padding:"10px 14px",background:"#0f172a",border:"1px solid rgba(255,255,255,.1)",borderRadius:9,fontSize:13,color:"#f1f5f9",outline:"none"}}/>
+          </div>
+
+          {authMode!=="reset"&&<div style={{marginBottom:20}}>
+            <label style={{fontSize:11,fontWeight:600,color:"#94a3b8",display:"block",marginBottom:5,letterSpacing:".04em"}}>PASSWORD</label>
+            <input value={password} onChange={e=>setPassword(e.target.value)} placeholder="••••••••••••" type="password" onKeyDown={e=>e.key==="Enter"&&submit()}
+              style={{width:"100%",padding:"10px 14px",background:"#0f172a",border:"1px solid rgba(255,255,255,.1)",borderRadius:9,fontSize:13,color:"#f1f5f9",outline:"none"}}/>
+          </div>}
+
+          {error&&<div style={{padding:"9px 13px",background:"rgba(220,38,38,.15)",border:"1px solid rgba(220,38,38,.3)",borderRadius:8,fontSize:12,color:"#fca5a5",marginBottom:14}}>{error}</div>}
+          {info&&<div style={{padding:"9px 13px",background:"rgba(22,163,74,.15)",border:"1px solid rgba(22,163,74,.3)",borderRadius:8,fontSize:12,color:"#86efac",marginBottom:14}}>{info}</div>}
+
+          <button onClick={submit} disabled={busy}
+            style={{width:"100%",padding:"11px",background:busy?"#334155":"linear-gradient(135deg,#2563eb,#1d4ed8)",border:"none",borderRadius:10,color:"#fff",fontSize:13,fontWeight:700,cursor:busy?"default":"pointer",letterSpacing:".02em",boxShadow:busy?"none":"0 4px 14px rgba(37,99,235,.3)"}}>
+            {busy?"Working…":authMode==="login"?"Sign In →":authMode==="signup"?"Create Account →":"Send Reset Email"}
+          </button>
+
+          <div style={{marginTop:18,display:"flex",justifyContent:"center",gap:20,fontSize:11}}>
+            {authMode!=="login"&&<button onClick={()=>{setAuthMode("login");setError("");setInfo("");}} style={{background:"none",border:"none",color:"#64748b",cursor:"pointer",textDecoration:"underline"}}>Sign in</button>}
+            {authMode!=="signup"&&<button onClick={()=>{setAuthMode("signup");setError("");setInfo("");}} style={{background:"none",border:"none",color:"#64748b",cursor:"pointer",textDecoration:"underline"}}>Create account</button>}
+            {authMode!=="reset"&&<button onClick={()=>{setAuthMode("reset");setError("");setInfo("");}} style={{background:"none",border:"none",color:"#64748b",cursor:"pointer",textDecoration:"underline"}}>Forgot password</button>}
+          </div>
+        </div>
+
+        <div style={{textAlign:"center",marginTop:20,fontSize:10,color:"#334155"}}>
+          Meridian Properties · Internal Use Only
+        </div>
+      </div>
+    </div>
+  );
+}
 
 const TODAY = new Date("2026-02-19");
 const TODAY_STR = "2026-02-19";
@@ -1740,8 +1929,8 @@ function ContactsDocs({loans,onSelect}){
   // Load from storage
   useEffect(()=>{(async()=>{
     try{
-      const cr=await window.storage?.get("meridian-contacts");
-      const dr=await window.storage?.get("meridian-docs");
+      const cr=await supaStorage.get("meridian-contacts");
+      const dr=await supaStorage.get("meridian-docs");
       if(cr?.value)setContacts(JSON.parse(cr.value));
       if(dr?.value)setDocs(JSON.parse(dr.value));
     }catch{}
@@ -1749,9 +1938,9 @@ function ContactsDocs({loans,onSelect}){
   })();},[]);
 
   // Save contacts
-  useEffect(()=>{if(!loaded)return;(async()=>{try{await window.storage?.set("meridian-contacts",JSON.stringify(contacts));}catch{}})();},[contacts,loaded]);
+  useEffect(()=>{if(!loaded)return;(async()=>{try{await supaStorage.set("meridian-contacts",JSON.stringify(contacts));}catch{}})();},[contacts,loaded]);
   // Save docs (base64 - large)
-  useEffect(()=>{if(!loaded)return;(async()=>{try{await window.storage?.set("meridian-docs",JSON.stringify(docs));}catch{}})();},[docs,loaded]);
+  useEffect(()=>{if(!loaded)return;(async()=>{try{await supaStorage.set("meridian-docs",JSON.stringify(docs));}catch{}})();},[docs,loaded]);
 
   const addContact=()=>{
     if(!nc.name)return;
@@ -2750,8 +2939,8 @@ function NOIDSCRTracker({loans,onSelect}){
   const [form,setForm]=useState({date:"",noi:"",notes:""});
   const [adding,setAdding]=useState(false);
 
-  useEffect(()=>{(async()=>{try{const r=await window.storage?.get("meridian-noi");if(r?.value)setNoiLog(JSON.parse(r.value));}catch{}setLoaded(true);})();},[]);
-  useEffect(()=>{if(!loaded)return;(async()=>{try{await window.storage?.set("meridian-noi",JSON.stringify(noILog));}catch{}})();},[noILog,loaded]);
+  useEffect(()=>{(async()=>{try{const r=await supaStorage.get("meridian-noi");if(r?.value)setNoiLog(JSON.parse(r.value));}catch{}setLoaded(true);})();},[]);
+  useEffect(()=>{if(!loaded)return;(async()=>{try{await supaStorage.set("meridian-noi",JSON.stringify(noILog));}catch{}})();},[noILog,loaded]);
 
   const sel=loans.find(l=>String(l.id)===selId);
   const en=sel?enrich(sel):null;
@@ -2923,7 +3112,7 @@ function NOIDSCRTracker({loans,onSelect}){
 function CovenantMonitor({loans,onSelect}){
   const [noILog,setNoiLog]=useState({});
   const [loaded,setLoaded]=useState(false);
-  useEffect(()=>{(async()=>{try{const r=await window.storage?.get("meridian-noi");if(r?.value)setNoiLog(JSON.parse(r.value));}catch{}setLoaded(true);})();},[]);
+  useEffect(()=>{(async()=>{try{const r=await supaStorage.get("meridian-noi");if(r?.value)setNoiLog(JSON.parse(r.value));}catch{}setLoaded(true);})();},[]);
 
   const withCov=useMemo(()=>loans.filter(l=>l.dscrCovenant).map(l=>{
     const el=enrich(l);
@@ -3162,8 +3351,8 @@ function LenderCRM({loans,onSelect}){
   const [newNote,setNewNote]=useState("");
   const [noteType,setNoteType]=useState("call");
 
-  useEffect(()=>{(async()=>{try{const r=await window.storage?.get("meridian-lender-crm");if(r?.value)setNotes(JSON.parse(r.value));}catch{}setLoaded(true);})();},[]);
-  useEffect(()=>{if(!loaded)return;(async()=>{try{await window.storage?.set("meridian-lender-crm",JSON.stringify(notes));}catch{}})();},[notes,loaded]);
+  useEffect(()=>{(async()=>{try{const r=await supaStorage.get("meridian-lender-crm");if(r?.value)setNotes(JSON.parse(r.value));}catch{}setLoaded(true);})();},[]);
+  useEffect(()=>{if(!loaded)return;(async()=>{try{await supaStorage.set("meridian-lender-crm",JSON.stringify(notes));}catch{}})();},[notes,loaded]);
 
   // Group loans by lender
   const lenderMap=useMemo(()=>{
@@ -3473,15 +3662,15 @@ function AlertSystem({loans}){
   // Load/save
   useEffect(()=>{(async()=>{
     try{
-      const r=await window.storage?.get("meridian-alert-rules"); if(r?.value)setRules(JSON.parse(r.value));
-      const rc=await window.storage?.get("meridian-alert-recipients"); if(rc?.value)setRecipients(JSON.parse(rc.value));
-      const al=await window.storage?.get("meridian-alert-log"); if(al?.value)setAlertLog(JSON.parse(al.value));
+      const r=await supaStorage.get("meridian-alert-rules"); if(r?.value)setRules(JSON.parse(r.value));
+      const rc=await supaStorage.get("meridian-alert-recipients"); if(rc?.value)setRecipients(JSON.parse(rc.value));
+      const al=await supaStorage.get("meridian-alert-log"); if(al?.value)setAlertLog(JSON.parse(al.value));
     }catch{}
     setLoaded(true);
   })();},[]);
-  useEffect(()=>{if(!loaded)return;(async()=>{try{await window.storage?.set("meridian-alert-rules",JSON.stringify(rules));}catch{}})();},[rules,loaded]);
-  useEffect(()=>{if(!loaded)return;(async()=>{try{await window.storage?.set("meridian-alert-recipients",JSON.stringify(recipients));}catch{}})();},[recipients,loaded]);
-  useEffect(()=>{if(!loaded)return;(async()=>{try{await window.storage?.set("meridian-alert-log",JSON.stringify(alertLog));}catch{}})();},[alertLog,loaded]);
+  useEffect(()=>{if(!loaded)return;(async()=>{try{await supaStorage.set("meridian-alert-rules",JSON.stringify(rules));}catch{}})();},[rules,loaded]);
+  useEffect(()=>{if(!loaded)return;(async()=>{try{await supaStorage.set("meridian-alert-recipients",JSON.stringify(recipients));}catch{}})();},[recipients,loaded]);
+  useEffect(()=>{if(!loaded)return;(async()=>{try{await supaStorage.set("meridian-alert-log",JSON.stringify(alertLog));}catch{}})();},[alertLog,loaded]);
 
   // Evaluate all active rules against current loan data
   const liveAlerts = useMemo(()=>{
@@ -4014,15 +4203,15 @@ function LoanDocAbstract({loans,onSelect}){
   // Load metadata + chat from storage (docs stored individually by id)
   useEffect(()=>{(async()=>{
     try{
-      const m=await window.storage?.get("meridian-adocmeta");
+      const m=await supaStorage.get("meridian-adocmeta");
       if(m?.value)setDocMeta(JSON.parse(m.value));
-      const c=await window.storage?.get("meridian-achat");
+      const c=await supaStorage.get("meridian-achat");
       if(c?.value)setChat(JSON.parse(c.value));
     }catch{}
     setLoaded(true);
   })();},[]);
-  useEffect(()=>{if(!loaded)return;(async()=>{try{await window.storage?.set("meridian-adocmeta",JSON.stringify(docMeta));}catch{}})();},[docMeta,loaded]);
-  useEffect(()=>{if(!loaded)return;(async()=>{try{await window.storage?.set("meridian-achat",JSON.stringify(chat));}catch{}})();},[chat,loaded]);
+  useEffect(()=>{if(!loaded)return;(async()=>{try{await supaStorage.set("meridian-adocmeta",JSON.stringify(docMeta));}catch{}})();},[docMeta,loaded]);
+  useEffect(()=>{if(!loaded)return;(async()=>{try{await supaStorage.set("meridian-achat",JSON.stringify(chat));}catch{}})();},[chat,loaded]);
   useEffect(()=>{chatEndRef.current?.scrollIntoView({behavior:"smooth"});},[chat,selId,tab]);
 
   const sel=loans.find(l=>String(l.id)===selId);
@@ -4045,7 +4234,7 @@ function LoanDocAbstract({loans,onSelect}){
         r.readAsDataURL(file);
       });
       // Store base64 data by docId
-      try{await window.storage?.set(`meridian-adoc-${docId}`,b64);}
+      try{await supaStorage.set(`meridian-adoc-${docId}`,b64);}
       catch{alert(`Could not store ${file.name} — file may be too large.`);continue;}
       // Add metadata
       setDocMeta(p=>({...p,[selId]:[...(p[selId]||[]),{id:docId,name:file.name,size:file.size,uploadedAt:new Date().toISOString().slice(0,10)}]}));
@@ -4054,7 +4243,7 @@ function LoanDocAbstract({loans,onSelect}){
   };
 
   const deleteDoc=async docId=>{
-    try{await window.storage?.delete(`meridian-adoc-${docId}`);}catch{}
+    try{await supaStorage.delete(`meridian-adoc-${docId}`);}catch{}
     setDocMeta(p=>({...p,[selId]:(p[selId]||[]).filter(d=>d.id!==docId)}));
   };
 
@@ -4076,7 +4265,7 @@ function LoanDocAbstract({loans,onSelect}){
       const docData=[];
       for(const d of myDocs){
         try{
-          const r=await window.storage?.get(`meridian-adoc-${d.id}`);
+          const r=await supaStorage.get(`meridian-adoc-${d.id}`);
           if(r?.value)docData.push({...d,data:r.value});
         }catch{}
       }
@@ -4372,8 +4561,8 @@ function ContactsView({loans,onSelect}){
   const blank={role:"Servicer",name:"",company:"",phone:"",email:"",notes:""};
   const [nc,setNc]=useState(blank);
 
-  useEffect(()=>{(async()=>{try{const r=await window.storage?.get("meridian-contacts");if(r?.value)setContacts(JSON.parse(r.value));}catch{}setLoaded(true);})();},[]);
-  useEffect(()=>{if(!loaded)return;(async()=>{try{await window.storage?.set("meridian-contacts",JSON.stringify(contacts));}catch{}})();},[contacts,loaded]);
+  useEffect(()=>{(async()=>{try{const r=await supaStorage.get("meridian-contacts");if(r?.value)setContacts(JSON.parse(r.value));}catch{}setLoaded(true);})();},[]);
+  useEffect(()=>{if(!loaded)return;(async()=>{try{await supaStorage.set("meridian-contacts",JSON.stringify(contacts));}catch{}})();},[contacts,loaded]);
 
   const sel=loans.find(l=>String(l.id)===selId);
   const cur=contacts[selId]||[];
@@ -4452,6 +4641,22 @@ function ContactsView({loans,onSelect}){
   </div>);
 }
 
+/* ─────────── IMG SLOT (lazy signed-URL loader) ─────────── */
+function ImgSlot({f, getUrl, onLightbox}){
+  const [src,setSrc]=useState(f.data||null); // use base64 immediately if available
+  useEffect(()=>{
+    if(!src&&f.storagePath){
+      getUrl(f.storagePath,f.id).then(url=>{if(url)setSrc(url);});
+    }
+  },[f.storagePath,f.id]);
+  if(!src)return(<div style={{width:"100%",paddingTop:"56%",position:"relative",borderRadius:6,background:"var(--bg)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+    <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:"var(--t4)"}}>Loading…</div>
+  </div>);
+  return(<div onClick={()=>onLightbox({src,name:f.name})} style={{width:"100%",paddingTop:"56%",position:"relative",borderRadius:6,overflow:"hidden",cursor:"pointer",background:"var(--bg)"}}>
+    <img src={src} alt={f.name} style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}}/>
+  </div>);
+}
+
 /* ─────────── DOCUMENTS VIEW (full building grid + slots) ─────────── */
 const DOC_SLOTS=[
   {id:"loan_agreement",label:"Loan Agreement",icon:"📋",required:true},
@@ -4476,29 +4681,69 @@ function DocumentsView({loans}){
   const [filterMissing,setFilterMissing]=useState(false);
   const fileRefs=React.useRef({});
 
-  useEffect(()=>{(async()=>{try{const r=await window.storage?.get("meridian-propdocs");if(r?.value)setDocs(JSON.parse(r.value));}catch{}setLoaded(true);})();},[]);
-  useEffect(()=>{if(!loaded)return;(async()=>{try{await window.storage?.set("meridian-propdocs",JSON.stringify(docs));}catch{}})();},[docs,loaded]);
+  // docs state: {loanId: {slotId: [{id, name, size, type, storagePath, uploadedAt}]}}
+  // Files live in Supabase Storage; metadata lives in user_storage table
+  useEffect(()=>{(async()=>{
+    try{const r=await supaStorage.get("meridian-propdocs");if(r?.value)setDocs(JSON.parse(r.value));}catch{}
+    setLoaded(true);
+  })();},[]);
+  useEffect(()=>{if(!loaded)return;(async()=>{
+    // Save metadata only (no base64 blobs)
+    try{await supaStorage.set("meridian-propdocs",JSON.stringify(docs));}catch{}
+  })();},[docs,loaded]);
+
+  // Signed URL cache so we don't re-fetch on every render
+  const [urlCache,setUrlCache]=useState({});
+  const getUrl=useCallback(async(storagePath,fileId)=>{
+    if(urlCache[fileId])return urlCache[fileId];
+    if(!storagePath)return null;
+    const url=await supaStorage.getFileURL(storagePath);
+    if(url)setUrlCache(p=>({...p,[fileId]:url}));
+    return url;
+  },[urlCache]);
 
   const uploadFile=async(loanId,slotId,file)=>{
+    if(file.size>10*1024*1024){alert("File must be under 10MB.");return;}
     const key=`${loanId}-${slotId}`;
     setUploadingSlot(key);
-    const b64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=e=>res(e.target.result);r.onerror=rej;r.readAsDataURL(file);});
-    const entry={id:Date.now(),name:file.name,size:file.size,type:file.type,data:b64,uploadedAt:TODAY_STR};
-    setDocs(p=>{
-      const lDocs={...( p[loanId]||{})};
-      lDocs[slotId]=[...(lDocs[slotId]||[]),entry];
-      return{...p,[loanId]:lDocs};
-    });
+    try{
+      const fileId=Date.now();
+      const ext=file.name.split(".").pop();
+      const storagePath=`docs/${loanId}/${slotId}/${fileId}.${ext}`;
+      // Upload to Supabase Storage
+      const uploadedPath=await supaStorage.uploadFile(storagePath,file,file.type);
+      // Fall back to base64 if Supabase not configured (local mode)
+      let fallbackData=null;
+      if(!uploadedPath){
+        fallbackData=await new Promise((res,rej)=>{const r=new FileReader();r.onload=e=>res(e.target.result);r.onerror=rej;r.readAsDataURL(file);});
+      }
+      const entry={id:fileId,name:file.name,size:file.size,type:file.type,storagePath:uploadedPath||null,data:fallbackData,uploadedAt:TODAY_STR};
+      setDocs(p=>{
+        const lDocs={...(p[loanId]||{})};
+        lDocs[slotId]=[...(lDocs[slotId]||[]),entry];
+        return{...p,[loanId]:lDocs};
+      });
+    }catch(e){alert(`Upload failed: ${e.message}`);}
     setUploadingSlot(null);
   };
 
-  const deleteFile=(loanId,slotId,fileId)=>setDocs(p=>{
-    const lDocs={...(p[loanId]||{})};
-    lDocs[slotId]=(lDocs[slotId]||[]).filter(f=>f.id!==fileId);
-    return{...p,[loanId]:lDocs};
-  });
+  const deleteFile=async(loanId,slotId,fileId)=>{
+    // Find storagePath and remove from Supabase Storage
+    const f=(docs[loanId]?.[slotId]||[]).find(x=>x.id===fileId);
+    if(f?.storagePath)await supaStorage.deleteFile(f.storagePath);
+    setDocs(p=>{
+      const lDocs={...(p[loanId]||{})};
+      lDocs[slotId]=(lDocs[slotId]||[]).filter(f=>f.id!==fileId);
+      return{...p,[loanId]:lDocs};
+    });
+  };
 
-  const downloadFile=f=>{const a=document.createElement("a");a.href=f.data;a.download=f.name;a.click();};
+  const downloadFile=async f=>{
+    let url=f.data; // local fallback
+    if(f.storagePath){url=await supaStorage.getFileURL(f.storagePath)||f.data;}
+    if(!url)return;
+    const a=document.createElement("a");a.href=url;a.download=f.name;a.target="_blank";a.click();
+  };
   const fmtSize=b=>b>1e6?`${(b/1e6).toFixed(1)}MB`:b>1e3?`${(b/1024).toFixed(0)}KB`:`${b}B`;
   const isImg=t=>t&&t.startsWith("image/");
 
@@ -4610,15 +4855,16 @@ function DocumentsView({loans}){
                     {files.length===0&&<div style={{fontSize:9,color:"var(--t4)",textAlign:"center",padding:"8px 0",opacity:.7}}>No files</div>}
                     {files.map(f=>(
                       <div key={f.id} style={{marginBottom:5}}>
-                        {isImg(f.type)?<div onClick={()=>setLightbox({src:f.data,name:f.name})} style={{width:"100%",paddingTop:"56%",position:"relative",borderRadius:6,overflow:"hidden",cursor:"pointer",background:"var(--bg)"}}>
-                          <img src={f.data} alt={f.name} style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}}/>
-                        </div>:<div style={{display:"flex",alignItems:"center",gap:5,padding:"4px 6px",background:"var(--bg)",borderRadius:6}}>
-                          <span style={{fontSize:12}}>📄</span>
-                          <div style={{flex:1,minWidth:0}}>
-                            <div style={{fontSize:9,fontWeight:600,color:"var(--t1)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.name}</div>
-                            <div style={{fontSize:8,color:"var(--t4)"}}>{fmtSize(f.size)}</div>
-                          </div>
-                        </div>}
+                        {isImg(f.type)
+                          ? <ImgSlot f={f} getUrl={getUrl} onLightbox={setLightbox}/>
+                          : <div style={{display:"flex",alignItems:"center",gap:5,padding:"4px 6px",background:"var(--bg)",borderRadius:6}}>
+                              <span style={{fontSize:12}}>📄</span>
+                              <div style={{flex:1,minWidth:0}}>
+                                <div style={{fontSize:9,fontWeight:600,color:"var(--t1)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.name}</div>
+                                <div style={{fontSize:8,color:"var(--t4)"}}>{fmtSize(f.size)}</div>
+                              </div>
+                            </div>
+                        }
                         <div style={{display:"flex",gap:3,marginTop:3}}>
                           <button onClick={()=>downloadFile(f)} style={{flex:1,padding:"2px 0",background:"var(--bbg)",border:"1px solid var(--bbd)",borderRadius:5,fontSize:8,color:"var(--blue)",cursor:"pointer",fontWeight:600}}>⬇</button>
                           <button onClick={()=>deleteFile(l.id,slot.id,f.id)} style={{flex:1,padding:"2px 0",background:"var(--rbg)",border:"1px solid var(--rbd)",borderRadius:5,fontSize:8,color:"var(--red)",cursor:"pointer"}}>✕</button>
@@ -5097,9 +5343,22 @@ export default function App(){
   const [sbSearch,setSbSearch]=useState("");
   const [loaded,setLoaded]=useState(false);
   const [navGroups,setNavGroups]=useState({risk:true,maturities:true,relationships:true,intelligence:true});
+  const [user,setUser]=useState(null);
 
-  useEffect(()=>{(async()=>{try{const r=await window.storage?.get("meridian-v5");if(r?.value){const p=JSON.parse(r.value);if(Array.isArray(p)&&p.length>0)setLoans(p);}}catch{}setLoaded(true);})();},[]);
-  useEffect(()=>{if(!loaded)return;(async()=>{try{await window.storage?.set("meridian-v5",JSON.stringify(loans));}catch{}})();},[loans,loaded]);
+  // Get current user
+  useEffect(()=>{
+    if(!supabase)return;
+    supabase.auth.getUser().then(({data:{user}})=>setUser(user));
+    const {data:{subscription}}=supabase.auth.onAuthStateChange((_,s)=>setUser(s?.user||null));
+    return()=>subscription.unsubscribe();
+  },[]);
+
+  const signOut=async()=>{
+    if(supabase)await supabase.auth.signOut();
+  };
+
+  useEffect(()=>{(async()=>{try{const r=await supaStorage.get("meridian-v5");if(r?.value){const p=JSON.parse(r.value);if(Array.isArray(p)&&p.length>0)setLoans(p);}}catch{}setLoaded(true);})();},[]);
+  useEffect(()=>{if(!loaded)return;(async()=>{try{await supaStorage.set("meridian-v5",JSON.stringify(loans));}catch{}})();},[loans,loaded]);
 
   const addLoan=l=>setLoans(p=>[...p,l]);
   const saveLoan=(id,ch)=>setLoans(p=>p.map(l=>{
@@ -5133,7 +5392,8 @@ export default function App(){
   const detailRaw=detail?loans.find(l=>l.id===detail.id)||detail:null;
   const topbarTitle=detail?detailRaw.addr:view==="overview"?"Portfolio Overview":view==="loans"?"All Loans":view==="calc"?"Refi Calculator":view==="pipeline"?"Refinancing Pipeline":view==="cashflow"?"Cashflow Impact":view==="noidscr"?"NOI & DSCR Tracker":view==="covenant"?"Covenant Monitor":view==="ratecap"?"Rate Cap Tracker":view==="alerts"?"🔔 Alert System":view==="lendercrm"?"Lender Relationships":view==="contacts"?"Contacts":view==="propdocs"?"🗂️ Property Documents":view==="stmtanalyzer"?"📈 Statement Analyzer":view==="markets"?"📊 Current Markets":view==="docai"?"✨ Doc Abstractor AI":view==="timeline"?"Maturity Timeline":view==="schedule"?"Loan Maturity Schedule":"Lender Exposure";
 
-  return(<>
+  return(<AuthGate>
+    <>
     <style>{CSS}</style>
     <style>{`
       /* Force full-page fill regardless of artifact/browser mount point */
@@ -5292,8 +5552,16 @@ export default function App(){
 
         <div className="sb-ft">
           <div className="sb-user">
-            <div className="sb-av">M</div>
-            <div><div className="sb-uname">Management</div><div className="sb-urole">Brooklyn Portfolio</div></div>
+            <div className="sb-av">{user?.user_metadata?.full_name?.[0]||user?.email?.[0]?.toUpperCase()||"M"}</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div className="sb-uname" style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{user?.user_metadata?.full_name||user?.email?.split("@")[0]||"Management"}</div>
+              <div className="sb-urole">{user?.email||"Brooklyn Portfolio"}</div>
+            </div>
+            {supabase&&<button onClick={signOut} title="Sign out" style={{background:"none",border:"none",cursor:"pointer",color:"var(--sb-t3)",fontSize:14,padding:"4px",flexShrink:0,opacity:.7,transition:"opacity .15s"}}
+              onMouseEnter={e=>e.currentTarget.style.opacity="1"}
+              onMouseLeave={e=>e.currentTarget.style.opacity=".7"}>
+              ⎋
+            </button>}
           </div>
         </div>
       </div>
@@ -5360,5 +5628,6 @@ export default function App(){
         </div>
       </div>
     </div>}
-  </>);
+  </>
+  </AuthGate>);
 }
