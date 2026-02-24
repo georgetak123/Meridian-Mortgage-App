@@ -5407,7 +5407,7 @@ export default function App(){
       if(supabase){
         const {data:{user}}=await supabase.auth.getUser();
         if(user){
-          const {data,error}=await supabase.from("loans").select("*").eq("user_id",user.id).order("id");
+          const {data,error}=await supabase.from("loans").select("*").order("id");
           if(!error && data && data.length>0) setLoans(data.map(dbRowToLoan));
         }
       } else {
