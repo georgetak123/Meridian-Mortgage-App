@@ -5358,17 +5358,111 @@ export default function App(){
     if(supabase)await supabase.auth.signOut();
   };
 
-  useEffect(()=>{(async()=>{try{const r=await supaStorage.get("meridian-v5");if(r?.value){const p=JSON.parse(r.value);if(Array.isArray(p)&&p.length>0)setLoans(p);}}catch{}setLoaded(true);})();},[]);
-  useEffect(()=>{if(!loaded)return;(async()=>{try{await supaStorage.set("meridian-v5",JSON.stringify(loans));}catch{}})();},[loans,loaded]);
+  // ── helpers: map DB row → app loan object ──────────────────────────────────
+  const dbRowToLoan = r => ({
+    id:               r.id,
+    addr:             r.addr||"",
+    lender:           r.lender||"",
+    entity:           r.entity||"",
+    origBalance:      Number(r.orig_balance)||0,
+    currentBalance:   Number(r.current_balance)||0,
+    origDate:         r.close_date||"",        // close_date = origination date
+    rate:             Number(r.rate)||0,
+    termMonths:       r.term_months!=null ? Number(r.term_months) : null,
+    termYears:        r.term_months!=null ? Number(r.term_months)/12 : null,
+    amortYears:       30,
+    maturityDate:     r.maturity_date||"",
+    ppp:              r.ppp||"",
+    prepay:           r.ppp||"",               // alias so rest of app still works
+    ioPeriodMonths:   r.io_period_months!=null ? Number(r.io_period_months) : null,
+    interestOnly:     r.io_period_months!=null && r.io_period_months > 0,
+    loanType:         (r.io_period_months!=null && r.io_period_months > 0) ? "IO" : "Fixed",
+    recourse:         false,
+    dscrCovenant:     null,
+    annualNOI:        null,
+    refiStatus:       r.refi_status||"Not Started",
+    notes:            r.notes||"",
+    activityLog:      r.activity_log||[]
+  });
+  const loanToDbRow = l => ({
+    addr:             l.addr,
+    lender:           l.lender,
+    entity:           l.entity||"",
+    orig_balance:     l.origBalance||0,
+    current_balance:  l.currentBalance||l.origBalance||0,
+    close_date:       l.origDate||null,
+    rate:             l.rate||0,
+    term_months:      l.termMonths||(l.termYears?Math.round(l.termYears*12):null),
+    maturity_date:    l.maturityDate||null,
+    ppp:              l.ppp||l.prepay||"",
+    io_period_months: l.ioPeriodMonths||(l.interestOnly&&l.termMonths?l.termMonths:null),
+    refi_status:      l.refiStatus||"Not Started",
+    notes:            l.notes||"",
+    activity_log:     l.activityLog||[]
+  });
 
-  const addLoan=l=>setLoans(p=>[...p,l]);
-  const saveLoan=(id,ch)=>setLoans(p=>p.map(l=>{
-    if(l.id!==id)return l;
-    if(ch.actAdd)return{...l,activityLog:[...(l.activityLog||[]),ch.actAdd]};
-    if(ch.actDel)return{...l,activityLog:(l.activityLog||[]).filter(e=>e.id!==ch.actDel)};
-    return{...l,...ch};
-  }));
-  const deleteLoan=id=>{setLoans(p=>p.filter(l=>l.id!==id));setDetail(null);};
+  // ── load loans from proper DB table ────────────────────────────────────────
+  useEffect(()=>{(async()=>{
+    try{
+      if(supabase){
+        const {data:{user}}=await supabase.auth.getUser();
+        if(user){
+          const {data,error}=await supabase.from("loans").select("*").eq("user_id",user.id).order("id");
+          if(!error && data && data.length>0) setLoans(data.map(dbRowToLoan));
+        }
+      } else {
+        // fallback: old JSON blob storage
+        const r=await supaStorage.get("meridian-v5");
+        if(r?.value){const p=JSON.parse(r.value);if(Array.isArray(p)&&p.length>0)setLoans(p);}
+      }
+    }catch(e){console.error("load loans:",e);}
+    setLoaded(true);
+  })();},[]);
+
+  // ── CRUD — each operation hits the DB directly ─────────────────────────────
+  const addLoan=async l=>{
+    if(supabase){
+      try{
+        const {data:{user}}=await supabase.auth.getUser();
+        const {data,error}=await supabase.from("loans").insert({...loanToDbRow(l),user_id:user.id}).select().single();
+        if(!error&&data) setLoans(p=>[...p,dbRowToLoan(data)]);
+      }catch(e){console.error("addLoan:",e); setLoans(p=>[...p,l]);}
+    } else { setLoans(p=>[...p,l]); }
+  };
+
+  const saveLoan=async(id,ch)=>{
+    setLoans(p=>p.map(l=>{
+      if(l.id!==id)return l;
+      if(ch.actAdd)return{...l,activityLog:[...(l.activityLog||[]),ch.actAdd]};
+      if(ch.actDel)return{...l,activityLog:(l.activityLog||[]).filter(e=>e.id!==ch.actDel)};
+      return{...l,...ch};
+    }));
+    if(supabase){
+      try{
+        const updated=await new Promise(res=>setLoans(p=>{const l=p.find(x=>x.id===id);res(l);return p;}));
+        const loan=ch.actAdd||ch.actDel
+          ? (() => { let l=null; setLoans(p=>{l=p.find(x=>x.id===id);return p;}); return l; })()
+          : null;
+        // re-read from state after update
+        setTimeout(async()=>{
+          setLoans(p=>{
+            const l=p.find(x=>x.id===id);
+            if(l&&supabase) supabase.from("loans").update(loanToDbRow(l)).eq("id",id).then(()=>{});
+            return p;
+          });
+        },100);
+      }catch(e){console.error("saveLoan:",e);}
+    }
+  };
+
+  const deleteLoan=async id=>{
+    setLoans(p=>p.filter(l=>l.id!==id));
+    setDetail(null);
+    if(supabase){
+      try{ await supabase.from("loans").delete().eq("id",id); }
+      catch(e){console.error("deleteLoan:",e);}
+    }
+  };
 
   // CSV export for entire portfolio
   const exportPortfolioCSV=()=>{
