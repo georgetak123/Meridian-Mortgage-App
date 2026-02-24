@@ -915,7 +915,9 @@ function LoanDetail({raw,onBack,onSave,onEdit,onDelete}){
       </div>
       <div className="d-meta-row">
         <div className="dm"><div className="dm-lbl">Maturity</div><div className={`dm-val${loan.status==="urgent"||loan.status==="matured"?" red":loan.status==="soon"?" amber":""}`}>{fDate(loan.maturityDate)}</div></div>
-        <div className="dm"><div className="dm-lbl">Current Balance</div><div className="dm-val">{f$(loan.curBal)}</div></div>
+        <div className="dm"><div className="dm-lbl">Term</div><div className="dm-val">{loan.termMonths?`${loan.termMonths} mo`:"—"}</div></div>
+        <div className="dm"><div className="dm-lbl">Orig Balance</div><div className="dm-val" style={{color:"var(--t3)"}}>{f$(loan.origBalance)}</div></div>
+        <div className="dm"><div className="dm-lbl">Current Balance</div><div className="dm-val">{f$(loan.currentBalance||loan.curBal)}</div></div>
         <div className="dm"><div className="dm-lbl">Monthly Payment</div><div className="dm-val">{f$(loan.pmt)}</div></div>
         <div className="dm"><div className="dm-lbl">Annual DS</div><div className="dm-val">{f$(loan.annualDS)}</div></div>
       </div>
@@ -934,7 +936,9 @@ function LoanDetail({raw,onBack,onSave,onEdit,onDelete}){
         <div className="panel"><div className="panel-hd">Loan Terms</div><div className="panel-body">
           <div className="prow"><span className="pk">Lender</span><span className="pv">{loan.lender}</span></div>
           <div className="prow"><span className="pk">Rate</span><span className={`pv${loan.rate>7?" red":loan.rate>5?" amber":" green"}`}>{fPct(loan.rate)}</span></div>
-          <div className="prow"><span className="pk">Orig. Balance</span><span className="pv">{f$(loan.origBalance)}</span></div>
+          <div className="prow"><span className="pk">Term</span><span className="pv">{loan.termMonths?`${loan.termMonths} months`:"—"}</span></div>
+          <div className="prow"><span className="pk">Orig. Balance</span><span className="pv" style={{color:"var(--t3)"}}>{f$(loan.origBalance)}</span></div>
+          <div className="prow"><span className="pk">Current Balance</span><span className="pv">{f$(loan.currentBalance||loan.curBal)}</span></div>
           <div className="prow"><span className="pk">Monthly Pmt</span><span className="pv">{f$(loan.pmt)}</span></div>
           <div className="prow"><span className="pk">Annual DS</span><span className="pv">{f$(loan.annualDS)}</span></div>
           <div className="prow"><span className="pk">Prepay</span><span className="pv" style={{color:"var(--amber)",fontWeight:600}}>{loan.prepay||"None"}</span></div>
@@ -1166,8 +1170,8 @@ function RefiCalc({loans}){
 /* ─────────── ADD / EDIT LOAN MODAL ─────────── */
 function LoanModal({onSave,onClose,initial}){
   const isEdit=!!initial;
-  const blank={addr:"",entity:"",lender:"",lenderType:"Regional Bank",loanType:"Fixed",origBalance:"",rate:"",termYears:"",origDate:"",maturityDate:"",amortYears:"",prepay:"",recourse:true,guarantor:"",escrow:"",extensionOptions:"",refiStatus:"Not Started",servicerName:"",servicerPhone:"",servicerEmail:"",brokerName:"",brokerPhone:"",notes:"",activityLog:[],annualNOI:"",dscrCovenant:"",capProvider:"",capRate:"",capExpiry:""};
-  const [f,setF]=useState(isEdit?{...blank,...initial,origBalance:String(initial.origBalance||""),rate:String(initial.rate||""),termYears:String(initial.termYears||""),amortYears:String(initial.amortYears||""),annualNOI:String(initial.annualNOI||""),dscrCovenant:String(initial.dscrCovenant||""),capRate:String(initial.capRate||"")}:blank);
+  const blank={addr:"",entity:"",lender:"",lenderType:"Regional Bank",loanType:"Fixed",origBalance:"",rate:"",termMonths:"",termYears:"",origDate:"",maturityDate:"",amortYears:"",prepay:"",recourse:true,guarantor:"",escrow:"",extensionOptions:"",refiStatus:"Not Started",servicerName:"",servicerPhone:"",servicerEmail:"",brokerName:"",brokerPhone:"",notes:"",activityLog:[],annualNOI:"",dscrCovenant:"",capProvider:"",capRate:"",capExpiry:""};
+  const [f,setF]=useState(isEdit?{...blank,...initial,origBalance:String(initial.origBalance||""),rate:String(initial.rate||""),termMonths:String(initial.termMonths||""),termYears:String(initial.termYears||""),amortYears:String(initial.amortYears||""),annualNOI:String(initial.annualNOI||""),dscrCovenant:String(initial.dscrCovenant||""),capRate:String(initial.capRate||"")}:blank);
   const s=(k,v)=>setF(p=>({...p,[k]:v}));
   const isIO=f.loanType==="IO"||f.loanType==="Bridge";
   const [section,setSection]=useState("property");
@@ -1175,7 +1179,7 @@ function LoanModal({onSave,onClose,initial}){
 
   const save=()=>{
     if(!f.addr||!f.lender||!f.origBalance||!f.rate||!f.maturityDate){alert("Required: Address, Lender, Balance, Rate, Maturity Date");return;}
-    const parsed={...f,interestOnly:isIO,origBalance:parseFloat(f.origBalance)||0,rate:parseFloat(f.rate)||0,termYears:parseInt(f.termYears)||1,amortYears:parseInt(f.amortYears)||0,annualNOI:parseFloat(f.annualNOI)||null,dscrCovenant:parseFloat(f.dscrCovenant)||null,capRate:parseFloat(f.capRate)||null};
+    const parsed={...f,interestOnly:isIO,origBalance:parseFloat(f.origBalance)||0,rate:parseFloat(f.rate)||0,termMonths:parseInt(f.termMonths)||null,termYears:parseInt(f.termMonths)?parseInt(f.termMonths)/12:null,amortYears:parseInt(f.amortYears)||0,annualNOI:parseFloat(f.annualNOI)||null,dscrCovenant:parseFloat(f.dscrCovenant)||null,capRate:parseFloat(f.capRate)||null};
     if(isEdit) onSave(initial.id,parsed);
     else onSave({...parsed,id:Date.now(),activityLog:[]});
   };
@@ -1217,7 +1221,7 @@ function LoanModal({onSave,onClose,initial}){
             <Field label="Loan Type" k="loanType" opts={[{v:"Fixed",l:"Fixed Rate"},{v:"ARM",l:"ARM"},{v:"IO",l:"Interest Only"},{v:"Bridge",l:"Bridge"},{v:"SOFR",l:"SOFR"}]}/>
             <Field label="Interest Rate (%)" k="rate" type="number" req placeholder="5.25"/>
             <Field label="Original Balance ($)" k="origBalance" type="number" req placeholder="5000000"/>
-            <Field label="Term (Years)" k="termYears" type="number" placeholder="10"/>
+            <Field label="Term (Months, e.g. 60 = 5yr, 84 = 7yr, 120 = 10yr)" k="termMonths" type="number" placeholder="84"/>
             {!isIO&&<Field label="Amortization (Years)" k="amortYears" type="number" placeholder="30"/>}
             <Field label="Origination Date" k="origDate" type="date"/>
             <Field label="Maturity Date" k="maturityDate" type="date" req/>
@@ -1577,7 +1581,7 @@ function Overview({loans,onSelect,onAdd,dbStatus,dbError}){
     {/* All Loans tab */}
     {ovTab==="loans"&&<div className="tbl-wrap">
       <table className="tbl">
-        <thead><tr><th>Address</th><th>Lender</th><th>Orig Balance</th><th>Cur Balance</th><th>Rate</th><th>Maturity</th><th>Refi Status</th></tr></thead>
+        <thead><tr><th>Address</th><th>Lender</th><th>Orig Balance</th><th>Cur Balance</th><th>Rate</th><th>Term</th><th>Maturity</th><th>Refi Status</th></tr></thead>
         <tbody>{[...en].sort((a,b)=>(a.daysLeft??99999)-(b.daysLeft??99999)).map(l=>(
           <tr key={l.id} onClick={()=>onSelect(loans.find(x=>x.id===l.id))}>
             <td><div className="td-a">{l.addr}</div><div className="td-b">{l.entity||""}</div></td>
@@ -1585,6 +1589,7 @@ function Overview({loans,onSelect,onAdd,dbStatus,dbError}){
             <td><span className="td-n" style={{color:"var(--t3)"}}>{f$(l.origBalance)}</span></td>
             <td><span className="td-n">{f$(l.currentBalance||l.curBal)}</span></td>
             <td><span className={`td-n${l.rate>7?" red":l.rate>5?" amber":" green"}`}>{fPct(l.rate)}</span></td>
+            <td><span className="td-mono" style={{fontSize:12,color:"var(--t2)"}}>{l.termMonths?`${l.termMonths}mo`:"—"}</span></td>
             <td><MatChip loan={l}/></td>
             <td><RefiChip status={l.refiStatus}/></td>
           </tr>
@@ -1596,7 +1601,7 @@ function Overview({loans,onSelect,onAdd,dbStatus,dbError}){
             <td><span className="td-n" style={{color:"var(--t3)",fontWeight:700}}>{f$(origTotal)}</span></td>
             <td><span className="td-n" style={{fontWeight:700}}>{f$(tb)}</span></td>
             <td><span className="td-n amber" style={{fontWeight:700}}>{fPct(wac)} avg</span></td>
-            <td/><td/>
+            <td/><td/><td/>
           </tr>
         </tfoot>
       </table>
@@ -1671,7 +1676,7 @@ function AllLoans({loans,onSelect,onAdd}){
     </div>
     <div className="tbl-wrap">
       <table className="tbl">
-        <thead><tr>{th("Address","addr")}{th("Lender","lender")}<th>Type</th>{th("Balance","curBal")}{th("Rate","rate")}{th("Payment","pmt")}{th("DSCR","dscr")}{th("Maturity","daysLeft")}<th>Refi</th></tr></thead>
+        <thead><tr>{th("Address","addr")}{th("Lender","lender")}<th>Type</th>{th("Balance","curBal")}{th("Rate","rate")}<th>Term</th>{th("Payment","pmt")}{th("DSCR","dscr")}{th("Maturity","daysLeft")}<th>Refi</th></tr></thead>
         <tbody>{rows.map(l=>(
           <tr key={l.id} onClick={()=>onSelect(loans.find(x=>x.id===l.id))}>
             <td><div className="td-a">{l.addr}</div><div className="td-b">{l.entity||l.lenderType}</div></td>
@@ -1679,6 +1684,7 @@ function AllLoans({loans,onSelect,onAdd}){
             <td><span className="chip chip-grey">{l.loanType}</span></td>
             <td><span className="td-n">{f$(l.curBal)}</span></td>
             <td><span className={`td-n${l.rate>7?" red":l.rate>5?" amber":" green"}`}>{fPct(l.rate)}</span></td>
+            <td><span style={{fontSize:12,color:"var(--t2)"}}>{l.termMonths?`${l.termMonths}mo`:"—"}</span></td>
             <td><span className="td-n">{f$(l.pmt)}/mo</span></td>
             <td><span className={`td-n${l.dscr&&l.dscrCovenant&&l.dscr<l.dscrCovenant?" red":!l.dscr?" muted":l.dscr>1.3?" green":" amber"}`}>{l.dscr?l.dscr.toFixed(2)+"x":"—"}</span></td>
             <td><MatChip loan={l}/></td>
