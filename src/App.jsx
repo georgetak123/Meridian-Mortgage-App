@@ -1196,7 +1196,7 @@ function LoanModal({onSave,onClose,initial}){
 
 
 /* ─────────── OVERVIEW ─────────── */
-function Overview({loans,onSelect,onAdd}){
+function Overview({loans,onSelect,onAdd,dbStatus,dbError}){
   const en=useMemo(()=>loans.map(enrich),[loans]);
   const tb=en.reduce((s,l)=>s+l.curBal,0);
   const wac=en.reduce((s,l)=>s+l.rate*l.origBalance,0)/en.reduce((s,l)=>s+l.origBalance,1);
@@ -1213,6 +1213,19 @@ function Overview({loans,onSelect,onAdd}){
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
       <div><div style={{fontSize:22,fontWeight:700,color:"var(--t1)"}}>Portfolio Overview</div><div style={{fontSize:13,color:"var(--t3)",marginTop:2}}>Brooklyn, NY · Debt Management</div></div>
     </div>
+    {/* DB Status Banner */}
+    {dbStatus==="error"&&<div style={{background:"#fef2f2",border:"1px solid #fca5a5",borderRadius:10,padding:"14px 18px",marginBottom:16,fontSize:13}}>
+      <strong style={{color:"#dc2626"}}>⚠️ Database connection error:</strong>
+      <div style={{color:"#991b1b",marginTop:4,fontFamily:"monospace",fontSize:12}}>{dbError}</div>
+      <div style={{color:"#7f1d1d",marginTop:6}}>Go to Supabase → SQL Editor and run <strong>setup_loans_table_v2.sql</strong> then <strong>insert_loans_v2.sql</strong></div>
+    </div>}
+    {dbStatus==="loading"&&<div style={{background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:10,padding:"14px 18px",marginBottom:16,fontSize:13,color:"#1d4ed8"}}>
+      ⏳ Connecting to database...
+    </div>}
+    {dbStatus==="empty"&&<div style={{background:"#fffbeb",border:"1px solid #fde68a",borderRadius:10,padding:"14px 18px",marginBottom:16,fontSize:13}}>
+      <strong style={{color:"#92400e"}}>📋 Database connected but no loans found.</strong>
+      <div style={{color:"#78350f",marginTop:4}}>Run <strong>insert_loans_v2.sql</strong> in Supabase SQL Editor to load your 77 loans — or add them manually below.</div>
+    </div>}
     <div style={{background:"var(--white)",border:"2px dashed var(--bd2)",borderRadius:20,padding:"64px 40px",textAlign:"center",marginTop:20}}>
       <div style={{fontSize:48,marginBottom:16,opacity:.2}}>🏛</div>
       <div style={{fontSize:20,fontWeight:700,color:"var(--t1)",marginBottom:8}}>No loans yet</div>
@@ -5401,21 +5414,32 @@ export default function App(){
     activity_log:     l.activityLog||[]
   });
 
-  // ── load loans from proper DB table ────────────────────────────────────────
+  const [dbStatus,setDbStatus]=useState("loading");
+  const [dbError,setDbError]=useState("");
+
+  // ── load loans from DB ─────────────────────────────────────────────────────
   useEffect(()=>{(async()=>{
     try{
       if(supabase){
-        const {data:{user}}=await supabase.auth.getUser();
-        if(user){
-          const {data,error}=await supabase.from("loans").select("*").order("id");
-          if(!error && data && data.length>0) setLoans(data.map(dbRowToLoan));
+        const {data:{user},error:authErr}=await supabase.auth.getUser();
+        if(authErr||!user){setDbStatus("error");setDbError("Not authenticated");setLoaded(true);return;}
+        const {data,error}=await supabase.from("loans").select("*").order("id");
+        if(error){
+          setDbStatus("error");
+          setDbError(error.message);
+          console.error("loans load error:",error);
+        } else if(data && data.length>0){
+          setLoans(data.map(dbRowToLoan));
+          setDbStatus("connected");
+        } else {
+          setDbStatus("empty");
         }
       } else {
-        // fallback: old JSON blob storage
         const r=await supaStorage.get("meridian-v5");
-        if(r?.value){const p=JSON.parse(r.value);if(Array.isArray(p)&&p.length>0)setLoans(p);}
+        if(r?.value){const p=JSON.parse(r.value);if(Array.isArray(p)&&p.length>0){setLoans(p);setDbStatus("connected");}}
+        else setDbStatus("empty");
       }
-    }catch(e){console.error("load loans:",e);}
+    }catch(e){setDbStatus("error");setDbError(e.message);console.error("load loans:",e);}
     setLoaded(true);
   })();},[]);
 
@@ -5678,7 +5702,7 @@ export default function App(){
                 onEdit={()=>setEditing(detailRaw)}
                 onDelete={()=>deleteLoan(detailRaw.id)}
               />
-            : view==="overview"?<Overview loans={loans} onSelect={openLoan} onAdd={()=>setAdding(true)}/>
+            : view==="overview"?<Overview loans={loans} onSelect={openLoan} onAdd={()=>setAdding(true)} dbStatus={dbStatus} dbError={dbError}/>
             : view==="loans"?<AllLoans loans={loans} onSelect={openLoan} onAdd={()=>setAdding(true)}/>
             : view==="calc"?<RefiCalc loans={loans}/>
             : view==="pipeline"?<RefiPipeline loans={loans} onSelect={openLoan} onSave={saveLoan}/>
