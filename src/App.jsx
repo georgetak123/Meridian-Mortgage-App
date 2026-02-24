@@ -204,10 +204,11 @@ const matSt=s=>{const d=daysTo(s);if(d===null)return"unknown";if(d<0)return"matu
 const enrich=loan=>{
   // Term: use termMonths directly from DB (your Excel "Term" column, e.g. 84)
   // Fall back to termYears*12 or amortYears*12 for manually added loans
+  // If no term at all — leave payment blank rather than inventing a number
   const termM = loan.termMonths
-    || (loan.termYears ? Math.round(loan.termYears*12) : null)
-    || (loan.amortYears ? loan.amortYears*12 : null)
-    || 120; // default 10yr if nothing set
+    || (loan.termYears ? Math.round(loan.termYears * 12) : null)
+    || (loan.amortYears ? loan.amortYears * 12 : null)
+    || null; // no default — if we don't know the term, we don't fabricate a payment
 
   const el = mosBetween(loan.origDate, TODAY_STR);
   const origBal = loan.origBalance || 0;
@@ -216,14 +217,14 @@ const enrich=loan=>{
     : origBal; // use real DB current balance
 
   // Monthly payment formula: P * [r(1+r)^n] / [(1+r)^n - 1]
-  // For IO loans: just interest = balance * rate/12
+  // IO loans: interest only on current balance · No term = no payment shown
   const mr = (loan.rate || 0) / 100 / 12;
   const pmt = loan.interestOnly || loan.loanType === "IO"
-    ? curBal * mr                                       // IO: interest only on current bal
-    : calcPmt(origBal, loan.rate || 0, termM);          // Amortizing: full formula on orig bal
+    ? curBal * mr                                            // IO: always calculable
+    : termM ? calcPmt(origBal, loan.rate || 0, termM) : 0;  // Amortizing: only if term exists
 
   const mktRate = MKT[loan.loanType] || 6.5;
-  const mpmt = calcPmt(Math.max(0,curBal), mktRate, Math.max(1, termM - el));
+  const mpmt = termM ? calcPmt(Math.max(0,curBal), mktRate, Math.max(1, termM - el)) : 0;
   const pp   = origBal > 0 ? Math.max(0, (origBal - curBal) / origBal * 100) : 0;
   const dl   = daysTo(loan.maturityDate);
   const capExp = loan.capExpiry && loan.loanType==="ARM" && dl!=null && daysTo(loan.capExpiry)<dl;
@@ -231,12 +232,12 @@ const enrich=loan=>{
 
   return {...loan, curBal, pmt, annualDS: pmt*12, marketPmt: mpmt, paidPct: pp,
     daysLeft: dl, status: matSt(loan.maturityDate), capExpiring: capExp, dscr,
-    termMonths: loan.termMonths || termM};
+    termMonths: loan.termMonths || null}; // preserve null — don't substitute a fake value
 };
 
 const f$=n=>{if(!n&&n!==0)return"—";if(Math.abs(n)>=1e6)return`$${(n/1e6).toFixed(2)}M`;if(Math.abs(n)>=1e3)return`$${(n/1e3).toFixed(0)}K`;return`$${Math.round(n).toLocaleString()}`;};
 // Full payment format: $85,828.44 — always show full number with 2 decimal cents
-const fPmt=n=>{if(!n&&n!==0)return"—";return"$"+Math.abs(n).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});};
+const fPmt=n=>{if(!n||n===0)return"—";return"$"+Math.abs(n).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});};
 const fPct=n=>n!=null&&n!==""?`${Number(n).toFixed(3)}%`:"—";
 const fDate=s=>s?new Date(s).toLocaleDateString("en-US",{month:"long",year:"numeric"}):"—";
 const fDateS=s=>s?new Date(s).toLocaleDateString("en-US",{month:"short",year:"numeric"}):"—";
