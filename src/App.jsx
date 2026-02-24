@@ -199,8 +199,8 @@ const ACT_TYPES = [{id:"call",icon:"📞",label:"Call"},{id:"email",icon:"✉️
 const mosBetween=(a,b)=>{const d1=new Date(a),d2=new Date(b);return(d2.getFullYear()-d1.getFullYear())*12+(d2.getMonth()-d1.getMonth());};
 const calcPmt=(p,r,n)=>{const mr=r/100/12;if(!mr||n<=0)return 0;return p*(mr*Math.pow(1+mr,n))/(Math.pow(1+mr,n)-1);};
 const calcBal=(p,r,n,t)=>{const mr=r/100/12;if(!mr)return Math.max(0,p-(p/n)*t);const pm=calcPmt(p,r,n);return Math.max(0,p*Math.pow(1+mr,t)-pm*((Math.pow(1+mr,t)-1)/mr));};
-const daysTo=s=>Math.round((new Date(s)-TODAY)/86400000);
-const matSt=s=>{const d=daysTo(s);if(d<0)return"matured";if(d<=180)return"urgent";if(d<=365)return"soon";return"ok";};
+const daysTo=s=>{if(!s||s==="")return null;const d=new Date(s);if(isNaN(d))return null;return Math.round((d-TODAY)/86400000);};
+const matSt=s=>{const d=daysTo(s);if(d===null)return"unknown";if(d<0)return"matured";if(d<=180)return"urgent";if(d<=365)return"soon";return"ok";};
 const enrich=loan=>{
   const el=mosBetween(loan.origDate,TODAY_STR);
   const amM=(loan.amortYears||loan.termYears||1)*12;
@@ -210,13 +210,15 @@ const enrich=loan=>{
   const mpmt=calcPmt(Math.max(0,cb),mr,Math.max(1,amM-el));
   const pp=loan.origBalance>0?Math.max(0,(loan.origBalance-cb)/loan.origBalance*100):0;
   const dl=daysTo(loan.maturityDate);
-  const capExp=loan.capExpiry&&loan.loanType==="ARM"&&daysTo(loan.capExpiry)<dl;
+  const capExp=loan.capExpiry&&loan.loanType==="ARM"&&dl!=null&&daysTo(loan.capExpiry)<dl;
   const dscr=loan.annualNOI&&pmt>0?loan.annualNOI/(pmt*12):null;
-  return{...loan,curBal:cb,pmt,annualDS:pmt*12,marketPmt:mpmt,paidPct:pp,daysLeft:dl,status:matSt(loan.maturityDate),capExpiring:capExp,dscr};
+  // Use actual currentBalance from DB if available, else calculated
+  const actualBal=loan.currentBalance&&loan.currentBalance>0?loan.currentBalance:cb;
+  return{...loan,curBal:actualBal,pmt,annualDS:pmt*12,marketPmt:mpmt,paidPct:pp,daysLeft:dl,status:matSt(loan.maturityDate),capExpiring:capExp,dscr};
 };
 
 const f$=n=>{if(!n&&n!==0)return"—";if(Math.abs(n)>=1e6)return`$${(n/1e6).toFixed(2)}M`;if(Math.abs(n)>=1e3)return`$${(n/1e3).toFixed(0)}K`;return`$${Math.round(n).toLocaleString()}`;};
-const fPct=n=>n!=null?`${Number(n).toFixed(2)}%`:"—";
+const fPct=n=>n!=null&&n!==""?`${Number(n).toFixed(3)}%`:"—";
 const fDate=s=>s?new Date(s).toLocaleDateString("en-US",{month:"long",year:"numeric"}):"—";
 const fDateS=s=>s?new Date(s).toLocaleDateString("en-US",{month:"short",year:"numeric"}):"—";
 const fDateF=s=>s?new Date(s).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"—";
@@ -564,6 +566,7 @@ function CopyBtn({text}){
 }
 function MatChip({loan}){
   const s=loan.status,d=loan.daysLeft;
+  if(s==="unknown"||d===null||d===undefined) return <span className="chip chip-grey">No date</span>;
   const lbl=s==="matured"?"Past Maturity":d<=365?`${d}d left`:`${Math.round(d/30)}mo left`;
   const cls=s==="matured"||s==="urgent"?"chip-red":s==="soon"?"chip-amber":"chip-green";
   return <span className={`chip ${cls}`}>{lbl}</span>;
@@ -726,7 +729,7 @@ const TREASURY_RATE=4.35; // approximate 10yr Treasury — update as needed
 function PrepayCalc({loan}){
   const el=enrich(loan);
   const bal=el.curBal;
-  const moLeft=Math.max(0,el.daysLeft/30);
+  const moLeft=el.daysLeft!=null?Math.max(0,el.daysLeft/30):0;
   const prepayRaw=(loan.prepay||"").toLowerCase();
 
   // Detect prepay type from field
@@ -1198,7 +1201,7 @@ function LoanModal({onSave,onClose,initial}){
 /* ─────────── OVERVIEW ─────────── */
 function Overview({loans,onSelect,onAdd,dbStatus,dbError}){
   const en=useMemo(()=>loans.map(enrich),[loans]);
-  const tb=en.reduce((s,l)=>s+l.curBal,0);
+  const tb=loans.reduce((s,l)=>s+(l.currentBalance||l.origBalance||0),0);
   const wac=en.reduce((s,l)=>s+l.rate*l.origBalance,0)/en.reduce((s,l)=>s+l.origBalance,1);
   const urg=en.filter(l=>l.status==="urgent"||l.status==="matured");
   const inRefi=en.filter(l=>l.refiStatus!=="Not Started"&&l.refiStatus!=="Closed");
@@ -1207,7 +1210,7 @@ function Overview({loans,onSelect,onAdd,dbStatus,dbError}){
   en.filter(l=>l.status==="urgent").forEach(l=>alerts.push({cls:"al-red",ic:"⚠",hl:`${l.addr} — matures ${fDateS(l.maturityDate)}`,detail:`${f$(l.curBal)} · ${l.lender} · ${l.daysLeft} days remaining`,action:"Begin refinancing now",id:l.id}));
   en.filter(l=>l.dscr&&l.dscrCovenant&&l.dscr<l.dscrCovenant).forEach(l=>alerts.push({cls:"al-red",ic:"📊",hl:`${l.addr} — DSCR below covenant (${l.dscr?.toFixed(2)}x vs ${l.dscrCovenant}x)`,detail:l.lender,action:"Address NOI shortfall or request waiver",id:l.id}));
   en.filter(l=>l.capExpiring).forEach(l=>alerts.push({cls:"al-amber",ic:"📉",hl:`${l.addr} — rate cap expires ${fDateS(l.capExpiry)}`,detail:"Cap expires before loan maturity",action:"Purchase new cap or begin refi",id:l.id}));
-  en.filter(l=>l.status==="soon").forEach(l=>alerts.push({cls:"al-amber",ic:"◎",hl:`${l.addr} — matures ${fDateS(l.maturityDate)}`,detail:`${Math.round(l.daysLeft/30)} months away`,action:"Begin lender conversations",id:l.id}));
+  en.filter(l=>l.status==="soon").forEach(l=>alerts.push({cls:"al-amber",ic:"◎",hl:`${l.addr} — matures ${fDateS(l.maturityDate)}`,detail:l.daysLeft!=null?`${Math.round(l.daysLeft/30)} months away`:"",action:"Begin lender conversations",id:l.id}));
 
   if(loans.length===0){return(<div>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
@@ -2409,14 +2412,16 @@ function MaturityTimeline({loans,onSelect}){
   };
 
   function barPos(l){
-    const os=Math.max(0,(new Date(l.origDate).getFullYear()+(new Date(l.origDate).getMonth()/12)-TLS)/SPAN);
-    const ms=Math.min(1,(new Date(l.maturityDate).getFullYear()+(new Date(l.maturityDate).getMonth()/12)-TLS)/SPAN);
+    const od=l.origDate?new Date(l.origDate):new Date("2020-01-01");
+    const md=l.maturityDate?new Date(l.maturityDate):new Date("2030-01-01");
+    const os=Math.max(0,(od.getFullYear()+(od.getMonth()/12)-TLS)/SPAN);
+    const ms=Math.min(1,(md.getFullYear()+(md.getMonth()/12)-TLS)/SPAN);
     return{left:`${os*100}%`,width:`${Math.max(0.8,(ms-os)*100)}%`};
   }
 
   // Group maturities by year for summary
   const byYear={};
-  en.forEach(l=>{const y=new Date(l.maturityDate).getFullYear();if(!byYear[y])byYear[y]={count:0,bal:0,urgent:0};byYear[y].count++;byYear[y].bal+=l.curBal;if(l.status==="urgent"||l.status==="matured")byYear[y].urgent++;});
+  en.forEach(l=>{if(!l.maturityDate)return;const y=new Date(l.maturityDate).getFullYear();if(isNaN(y))return;if(!byYear[y])byYear[y]={count:0,bal:0,urgent:0};byYear[y].count++;byYear[y].bal+=l.curBal;if(l.status==="urgent"||l.status==="matured")byYear[y].urgent++;});
   const matSummary=Object.entries(byYear).sort((a,b)=>a[0]-b[0]);
 
   return(<div>
@@ -2643,10 +2648,10 @@ function LoanMaturitySchedule({loans,onSelect}){
                       fontSize:16,fontWeight:700,
                       color:l.daysLeft<0?"var(--red)":l.daysLeft<180?"var(--red)":l.daysLeft<365?"var(--amber)":"var(--t1)",
                     }}>
-                      {l.daysLeft<0?`${Math.abs(l.daysLeft)}d over`:`${l.daysLeft}d`}
+                      {l.daysLeft<0?`${Math.abs(l.daysLeft)}d over`:l.daysLeft!=null?`${l.daysLeft}d`:""}
                     </div>
                     <div style={{fontSize:9,color:"var(--t3)",marginTop:1}}>
-                      {Math.abs(Math.round(l.daysLeft/30))} mo {l.daysLeft<0?"past":"left"}
+                      {l.daysLeft!=null?`${Math.abs(Math.round(l.daysLeft/30))} mo ${l.daysLeft<0?"past":"left"}`:""}
                     </div>
                   </td>
                   <td>
