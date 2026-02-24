@@ -202,22 +202,41 @@ const calcBal=(p,r,n,t)=>{const mr=r/100/12;if(!mr)return Math.max(0,p-(p/n)*t);
 const daysTo=s=>{if(!s||s==="")return null;const d=new Date(s);if(isNaN(d))return null;return Math.round((d-TODAY)/86400000);};
 const matSt=s=>{const d=daysTo(s);if(d===null)return"unknown";if(d<0)return"matured";if(d<=180)return"urgent";if(d<=365)return"soon";return"ok";};
 const enrich=loan=>{
-  const el=mosBetween(loan.origDate,TODAY_STR);
-  const amM=(loan.amortYears||loan.termYears||1)*12;
-  const cb=loan.interestOnly?loan.origBalance:Math.max(0,calcBal(loan.origBalance,loan.rate,amM,el));
-  const pmt=loan.interestOnly?loan.origBalance*(loan.rate/100/12):calcPmt(loan.origBalance,loan.rate,amM);
-  const mr=MKT[loan.loanType]||6.5;
-  const mpmt=calcPmt(Math.max(0,cb),mr,Math.max(1,amM-el));
-  const pp=loan.origBalance>0?Math.max(0,(loan.origBalance-cb)/loan.origBalance*100):0;
-  const dl=daysTo(loan.maturityDate);
-  const capExp=loan.capExpiry&&loan.loanType==="ARM"&&dl!=null&&daysTo(loan.capExpiry)<dl;
-  const dscr=loan.annualNOI&&pmt>0?loan.annualNOI/(pmt*12):null;
-  // Use actual currentBalance from DB if available, else calculated
-  const actualBal=loan.currentBalance&&loan.currentBalance>0?loan.currentBalance:cb;
-  return{...loan,curBal:actualBal,pmt,annualDS:pmt*12,marketPmt:mpmt,paidPct:pp,daysLeft:dl,status:matSt(loan.maturityDate),capExpiring:capExp,dscr};
+  // Term: use termMonths directly from DB (your Excel "Term" column, e.g. 84)
+  // Fall back to termYears*12 or amortYears*12 for manually added loans
+  const termM = loan.termMonths
+    || (loan.termYears ? Math.round(loan.termYears*12) : null)
+    || (loan.amortYears ? loan.amortYears*12 : null)
+    || 120; // default 10yr if nothing set
+
+  const el = mosBetween(loan.origDate, TODAY_STR);
+  const origBal = loan.origBalance || 0;
+  const curBal  = loan.currentBalance && loan.currentBalance > 0
+    ? loan.currentBalance
+    : origBal; // use real DB current balance
+
+  // Monthly payment formula: P * [r(1+r)^n] / [(1+r)^n - 1]
+  // For IO loans: just interest = balance * rate/12
+  const mr = (loan.rate || 0) / 100 / 12;
+  const pmt = loan.interestOnly || loan.loanType === "IO"
+    ? curBal * mr                                       // IO: interest only on current bal
+    : calcPmt(origBal, loan.rate || 0, termM);          // Amortizing: full formula on orig bal
+
+  const mktRate = MKT[loan.loanType] || 6.5;
+  const mpmt = calcPmt(Math.max(0,curBal), mktRate, Math.max(1, termM - el));
+  const pp   = origBal > 0 ? Math.max(0, (origBal - curBal) / origBal * 100) : 0;
+  const dl   = daysTo(loan.maturityDate);
+  const capExp = loan.capExpiry && loan.loanType==="ARM" && dl!=null && daysTo(loan.capExpiry)<dl;
+  const dscr = loan.annualNOI && pmt > 0 ? loan.annualNOI / (pmt * 12) : null;
+
+  return {...loan, curBal, pmt, annualDS: pmt*12, marketPmt: mpmt, paidPct: pp,
+    daysLeft: dl, status: matSt(loan.maturityDate), capExpiring: capExp, dscr,
+    termMonths: loan.termMonths || termM};
 };
 
 const f$=n=>{if(!n&&n!==0)return"—";if(Math.abs(n)>=1e6)return`$${(n/1e6).toFixed(2)}M`;if(Math.abs(n)>=1e3)return`$${(n/1e3).toFixed(0)}K`;return`$${Math.round(n).toLocaleString()}`;};
+// Full payment format: $85,828.44 — always show full number with 2 decimal cents
+const fPmt=n=>{if(!n&&n!==0)return"—";return"$"+Math.abs(n).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});;
 const fPct=n=>n!=null&&n!==""?`${Number(n).toFixed(3)}%`:"—";
 const fDate=s=>s?new Date(s).toLocaleDateString("en-US",{month:"long",year:"numeric"}):"—";
 const fDateS=s=>s?new Date(s).toLocaleDateString("en-US",{month:"short",year:"numeric"}):"—";
@@ -918,7 +937,7 @@ function LoanDetail({raw,onBack,onSave,onEdit,onDelete}){
         <div className="dm"><div className="dm-lbl">Term</div><div className="dm-val">{loan.termMonths?`${loan.termMonths} mo`:"—"}</div></div>
         <div className="dm"><div className="dm-lbl">Orig Balance</div><div className="dm-val" style={{color:"var(--t3)"}}>{f$(loan.origBalance)}</div></div>
         <div className="dm"><div className="dm-lbl">Current Balance</div><div className="dm-val">{f$(loan.currentBalance||loan.curBal)}</div></div>
-        <div className="dm"><div className="dm-lbl">Monthly Payment</div><div className="dm-val">{f$(loan.pmt)}</div></div>
+        <div className="dm"><div className="dm-lbl">Monthly Payment</div><div className="dm-val">{fPmt(loan.pmt)}</div></div>
         <div className="dm"><div className="dm-lbl">Annual DS</div><div className="dm-val">{f$(loan.annualDS)}</div></div>
       </div>
     </div>
@@ -939,7 +958,7 @@ function LoanDetail({raw,onBack,onSave,onEdit,onDelete}){
           <div className="prow"><span className="pk">Term</span><span className="pv">{loan.termMonths?`${loan.termMonths} months`:"—"}</span></div>
           <div className="prow"><span className="pk">Orig. Balance</span><span className="pv" style={{color:"var(--t3)"}}>{f$(loan.origBalance)}</span></div>
           <div className="prow"><span className="pk">Current Balance</span><span className="pv">{f$(loan.currentBalance||loan.curBal)}</span></div>
-          <div className="prow"><span className="pk">Monthly Pmt</span><span className="pv">{f$(loan.pmt)}</span></div>
+          <div className="prow"><span className="pk">Monthly Pmt</span><span className="pv">{fPmt(loan.pmt)}</span></div>
           <div className="prow"><span className="pk">Annual DS</span><span className="pv">{f$(loan.annualDS)}</span></div>
           <div className="prow"><span className="pk">Prepay</span><span className="pv" style={{color:"var(--amber)",fontWeight:600}}>{loan.prepay||"None"}</span></div>
           <div className="prow"><span className="pk">Extension</span><span className="pv">{loan.extensionOptions||"None"}</span></div>
@@ -1106,7 +1125,7 @@ function RefiCalc({loans}){
               <div style={{borderTop:"2px solid var(--bd2)",paddingTop:12,marginTop:4}}>
                 <div style={{fontSize:10,fontWeight:700,color:"var(--t3)",textTransform:"uppercase",letterSpacing:".06em",marginBottom:8}}>Projected Outcome</div>
                 {[
-                  ["New Monthly Pmt",   f$(q.pmt),                    q.diff>0?"green":q.diff<0?"red":""],
+                  ["New Monthly Pmt",   fPmt(q.pmt),                    q.diff>0?"green":q.diff<0?"red":""],
                   ["vs. Current",       `${q.diff>=0?"+":""}${f$(q.diff)}/mo`, q.diff>=0?"green":"red"],
                   ["Annual DS",         f$(q.annNew),                 ""],
                   ["Annual Savings",    f$(Math.abs(q.diff*12)),      q.diff>0?"green":q.diff<0?"red":""],
@@ -1144,9 +1163,9 @@ function RefiCalc({loans}){
           <tbody>
             {[
               ["Rate",          fPct(sel.rate),    qcalc.filter(q=>q.pmt!=null).map(q=>fPct(parseFloat(q.rate)))],
-              ["Monthly Pmt",   f$(cp),            qcalc.filter(q=>q.pmt!=null).map(q=>f$(q.pmt))],
+              ["Monthly Pmt",   fPmt(cp),          qcalc.filter(q=>q.pmt!=null).map(q=>fPmt(q.pmt))],
               ["Annual DS",     f$(annualDS),      qcalc.filter(q=>q.pmt!=null).map(q=>f$(q.annNew))],
-              ["Monthly Δ",     "—",               qcalc.filter(q=>q.pmt!=null).map(q=>`${q.diff>=0?"+":""}${f$(q.diff)}`)],
+              ["Monthly Δ",     "—",               qcalc.filter(q=>q.pmt!=null).map(q=>`${q.diff>=0?"+":""}${fPmt(q.diff)}`)],
               ["Closing Costs", "—",               qcalc.filter(q=>q.pmt!=null).map(q=>f$(q.costAmt))],
               ["Breakeven",     "—",               qcalc.filter(q=>q.pmt!=null).map(q=>q.be?`${q.be} mo`:"N/A")],
             ].map(([lbl,cur,vals])=>(
@@ -1489,7 +1508,7 @@ function Overview({loans,onSelect,onAdd,dbStatus,dbError}){
     <div className="ov-stats" style={{gridTemplateColumns:"repeat(5,1fr)",marginBottom:14}}>
       {SC("Original Loan Total",f$(origTotal),"sum of all original loans")}
       {SC("Current Debt Total",f$(tb),"sum of current balances")}
-      {SC("Monthly Debt Service",f$(monthlyDS),"est. all loans combined")}
+      {SC("Monthly Debt Service",fPmt(monthlyDS),"est. all loans combined")}
       {SC("Annual Debt Service",f$(annualDS),"total yearly payments")}
       {SC("Avg Loan Size",f$(avgLoan),`across ${loans.length} loans`)}
     </div>
@@ -1685,7 +1704,7 @@ function AllLoans({loans,onSelect,onAdd}){
             <td><span className="td-n">{f$(l.curBal)}</span></td>
             <td><span className={`td-n${l.rate>7?" red":l.rate>5?" amber":" green"}`}>{fPct(l.rate)}</span></td>
             <td><span style={{fontSize:12,color:"var(--t2)"}}>{l.termMonths?`${l.termMonths}mo`:"—"}</span></td>
-            <td><span className="td-n">{f$(l.pmt)}/mo</span></td>
+            <td><span className="td-n">{fPmt(l.pmt)}</span></td>
             <td><span className={`td-n${l.dscr&&l.dscrCovenant&&l.dscr<l.dscrCovenant?" red":!l.dscr?" muted":l.dscr>1.3?" green":" amber"}`}>{l.dscr?l.dscr.toFixed(2)+"x":"—"}</span></td>
             <td><MatChip loan={l}/></td>
             <td><RefiChip status={l.refiStatus}/></td>
