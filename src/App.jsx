@@ -1505,8 +1505,7 @@ function Overview({loans,onSelect,onAdd,dbStatus,dbError}){
 
     {/* ── KPI Row 1 — Debt & Cash Flow ── */}
     <div style={{fontSize:11,fontWeight:700,color:"var(--t3)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:8}}>Debt & Cash Flow</div>
-    <div className="ov-stats" style={{gridTemplateColumns:"repeat(5,1fr)",marginBottom:14}}>
-      {SC("Original Loan Total",f$(origTotal),"sum of all original loans")}
+    <div className="ov-stats" style={{gridTemplateColumns:"repeat(4,1fr)",marginBottom:14}}>
       {SC("Current Debt Total",f$(tb),"sum of current balances")}
       {SC("Monthly Debt Service",fPmt(monthlyDS),"est. all loans combined")}
       {SC("Annual Debt Service",f$(annualDS),"total yearly payments")}
