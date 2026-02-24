@@ -1270,6 +1270,66 @@ function LoanModal({onSave,onClose,initial}){
 }
 
 
+
+/* ─────────── PIE CHART ─────────── */
+function PieChart({slices,size=160,title,legend=true}){
+  const total=slices.reduce((s,x)=>s+x.val,0);
+  if(total===0)return null;
+  let cum=0;
+  const TAU=2*Math.PI;
+  const cx=size/2,cy=size/2,r=size/2-2,ri=r*0.52;
+  const [hov,setHov]=useState(null);
+  const paths=slices.map((sl,i)=>{
+    const start=cum/total*TAU-TAU/4;
+    cum+=sl.val;
+    const end=cum/total*TAU-TAU/4;
+    const gap=0.018;
+    const s=start+gap,e=end-gap;
+    if(e<=s)return null;
+    const x1=cx+r*Math.cos(s),y1=cy+r*Math.sin(s);
+    const x2=cx+r*Math.cos(e),y2=cy+r*Math.sin(e);
+    const xi1=cx+ri*Math.cos(s),yi1=cy+ri*Math.sin(s);
+    const xi2=cx+ri*Math.cos(e),yi2=cy+ri*Math.sin(e);
+    const big=(e-s)>Math.PI?1:0;
+    const scale=hov===i?1.04:1;
+    return(
+      <g key={i} style={{cursor:"pointer",transform:`scale(${scale})`,transformOrigin:`${cx}px ${cy}px`,transition:"transform .15s"}}
+        onMouseEnter={()=>setHov(i)} onMouseLeave={()=>setHov(null)}>
+        <path d={`M${xi1} ${yi1} L${x1} ${y1} A${r} ${r} 0 ${big} 1 ${x2} ${y2} L${xi2} ${yi2} A${ri} ${ri} 0 ${big} 0 ${xi1} ${yi1} Z`}
+          fill={sl.color} opacity={hov===null||hov===i?1:0.6}/>
+      </g>
+    );
+  });
+  const hovSlice=hov!=null?slices[hov]:null;
+  return(
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center"}}>
+      {title&&<div style={{fontSize:11,fontWeight:700,color:"var(--t3)",letterSpacing:".06em",textTransform:"uppercase",marginBottom:10,textAlign:"center"}}>{title}</div>}
+      <div style={{position:"relative",width:size,height:size,flexShrink:0}}>
+        <svg width={size} height={size}>{paths}</svg>
+        <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",pointerEvents:"none",padding:"20%",textAlign:"center"}}>
+          {hovSlice
+            ?<><div style={{fontSize:10,fontWeight:700,color:hovSlice.color,lineHeight:1.2}}>{hovSlice.label}</div>
+               <div style={{fontSize:13,fontWeight:800,color:"var(--t1)",marginTop:2}}>{hovSlice.val>=1e6?`$${(hovSlice.val/1e6).toFixed(1)}M`:hovSlice.val>=1e3?`$${(hovSlice.val/1e3).toFixed(0)}K`:`$${Math.round(hovSlice.val).toLocaleString()}`}</div>
+               <div style={{fontSize:9,color:"var(--t3)",marginTop:1}}>{(hovSlice.val/total*100).toFixed(1)}%</div></>
+            :<><div style={{fontSize:9,color:"var(--t3)"}}>TOTAL</div>
+               <div style={{fontSize:13,fontWeight:800,color:"var(--t1)"}}>{total>=1e6?`$${(total/1e6).toFixed(1)}M`:total>=1e3?`$${(total/1e3).toFixed(0)}K`:`$${Math.round(total).toLocaleString()}`}</div></>
+          }
+        </div>
+      </div>
+      {legend&&<div style={{marginTop:12,width:"100%"}}>
+        {slices.map((sl,i)=>(
+          <div key={i} style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,cursor:"pointer",opacity:hov===null||hov===i?1:0.5,transition:"opacity .15s"}}
+            onMouseEnter={()=>setHov(i)} onMouseLeave={()=>setHov(null)}>
+            <div style={{width:8,height:8,borderRadius:2,background:sl.color,flexShrink:0}}/>
+            <div style={{fontSize:10,color:"var(--t2)",flex:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{sl.label}</div>
+            <div style={{fontSize:10,fontWeight:600,color:"var(--t3)",flexShrink:0}}>{(sl.val/total*100).toFixed(0)}%</div>
+          </div>
+        ))}
+      </div>}
+    </div>
+  );
+}
+
 /* ─────────── OVERVIEW ─────────── */
 function Overview({loans,onSelect,onAdd,dbStatus,dbError}){
   const [ovTab,setOvTab]=useState("loans"); // loans | actions
@@ -1326,6 +1386,68 @@ function Overview({loans,onSelect,onAdd,dbStatus,dbError}){
     </div>
   );
 
+  // ── Chart data ─────────────────────────────────────────────────────────────
+  // 1. IO vs Amortizing vs Bridge
+  const ioAmt   = loans.filter(l=>l.loanType==="IO"||l.interestOnly).reduce((s,l)=>s+(l.currentBalance||l.origBalance||0),0);
+  const bridgeAmt= loans.filter(l=>l.loanType==="Bridge").reduce((s,l)=>s+(l.currentBalance||l.origBalance||0),0);
+  const amorAmt = tb - ioAmt - bridgeAmt;
+  const ioSlices=[
+    {label:"Interest Only",val:ioAmt,color:"#f59e0b"},
+    {label:"Amortizing",val:Math.max(0,amorAmt),color:"#10b981"},
+    {label:"Bridge",val:bridgeAmt,color:"#6366f1"},
+  ].filter(s=>s.val>0);
+
+  // 2. Rate Tiers
+  const rateTiers=[
+    {label:"Sub 4%",val:0,color:"#10b981"},
+    {label:"4% – 5%",val:0,color:"#34d399"},
+    {label:"5% – 6%",val:0,color:"#f59e0b"},
+    {label:"6%+",val:0,color:"#ef4444"},
+  ];
+  loans.forEach(l=>{
+    const b=l.currentBalance||l.origBalance||0;
+    const r=l.rate||0;
+    if(r<4)rateTiers[0].val+=b;
+    else if(r<5)rateTiers[1].val+=b;
+    else if(r<6)rateTiers[2].val+=b;
+    else rateTiers[3].val+=b;
+  });
+  const rateSlices=rateTiers.filter(s=>s.val>0);
+
+  // 3. Lender concentration (top 6 + Other)
+  const lenderMap={};
+  loans.forEach(l=>{const k=l.lender||"Unknown";lenderMap[k]=(lenderMap[k]||0)+(l.currentBalance||l.origBalance||0);});
+  const lenderColors=["#3b82f6","#8b5cf6","#f59e0b","#10b981","#ef4444","#06b6d4","#94a3b8"];
+  const lenderSorted=Object.entries(lenderMap).sort((a,b)=>b[1]-a[1]);
+  const top6=lenderSorted.slice(0,6);
+  const otherVal=lenderSorted.slice(6).reduce((s,[,v])=>s+v,0);
+  const lenderSlices=[...top6.map(([k,v],i)=>({label:k,val:v,color:lenderColors[i]})),
+    ...(otherVal>0?[{label:"Other",val:otherVal,color:"#94a3b8"}]:[])];
+
+  // 4. Maturity Buckets
+  const NOW_YR=new Date().getFullYear();
+  const matBuckets=[
+    {label:"Past Due",val:0,color:"#dc2626"},
+    {label:"2026",val:0,color:"#f97316"},
+    {label:"2027",val:0,color:"#f59e0b"},
+    {label:"2028",val:0,color:"#84cc16"},
+    {label:"2029+",val:0,color:"#10b981"},
+    {label:"No Date",val:0,color:"#94a3b8"},
+  ];
+  loans.forEach(l=>{
+    const b=l.currentBalance||l.origBalance||0;
+    if(!l.maturityDate){matBuckets[5].val+=b;return;}
+    const yr=new Date(l.maturityDate).getFullYear();
+    if(isNaN(yr)){matBuckets[5].val+=b;return;}
+    const d=daysTo(l.maturityDate);
+    if(d!=null&&d<0)matBuckets[0].val+=b;
+    else if(yr<=2026)matBuckets[1].val+=b;
+    else if(yr===2027)matBuckets[2].val+=b;
+    else if(yr===2028)matBuckets[3].val+=b;
+    else matBuckets[4].val+=b;
+  });
+  const matSlices=matBuckets.filter(s=>s.val>0);
+
   if(loans.length===0){return(<div>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
       <div><div style={{fontSize:22,fontWeight:700,color:"var(--t1)"}}>Portfolio Overview</div><div style={{fontSize:13,color:"var(--t3)",marginTop:2}}>Brooklyn, NY · Debt Management</div></div>
@@ -1360,8 +1482,9 @@ function Overview({loans,onSelect,onAdd,dbStatus,dbError}){
 
     {/* ── KPI Row 1 — Debt & Cash Flow ── */}
     <div style={{fontSize:11,fontWeight:700,color:"var(--t3)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:8}}>Debt & Cash Flow</div>
-    <div className="ov-stats" style={{gridTemplateColumns:"repeat(4,1fr)",marginBottom:14}}>
-      {SC("Total Debt",f$(tb),"sum of current balances")}
+    <div className="ov-stats" style={{gridTemplateColumns:"repeat(5,1fr)",marginBottom:14}}>
+      {SC("Original Loan Total",f$(origTotal),"sum of all original loans")}
+      {SC("Current Debt Total",f$(tb),"sum of current balances")}
       {SC("Monthly Debt Service",f$(monthlyDS),"est. all loans combined")}
       {SC("Annual Debt Service",f$(annualDS),"total yearly payments")}
       {SC("Avg Loan Size",f$(avgLoan),`across ${loans.length} loans`)}
@@ -1383,6 +1506,15 @@ function Overview({loans,onSelect,onAdd,dbStatus,dbError}){
       {SC("Maturing ≤6 Months",urg.length,`$${(urg.reduce((s,l)=>s+(l.currentBalance||l.origBalance||0),0)/1e6).toFixed(1)}M at risk`,urg.length>0?"red":"")}
       {SC("Refi In Progress",inRefi.length,"loans being refinanced","blue")}
       {SC("Top Lender Concentration",topLender[0].length>12?topLender[0].slice(0,12)+"…":topLender[0],`${topLenderPct.toFixed(0)}% of portfolio`)}
+    </div>
+
+    {/* ── Charts ── */}
+    <div style={{fontSize:11,fontWeight:700,color:"var(--t3)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:12}}>Portfolio Composition</div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:16,marginBottom:24,background:"var(--white)",border:"1px solid var(--bd)",borderRadius:14,padding:"20px 16px"}}>
+      <PieChart slices={ioSlices} title="IO vs Amortizing vs Bridge" size={160}/>
+      <PieChart slices={rateSlices} title="Debt by Rate Tier" size={160}/>
+      <PieChart slices={lenderSlices} title="Debt by Lender" size={160}/>
+      <PieChart slices={matSlices} title="Maturity Buckets" size={160}/>
     </div>
 
     {/* ── Urgent Maturities (within 6 months) ── */}
@@ -1457,6 +1589,16 @@ function Overview({loans,onSelect,onAdd,dbStatus,dbError}){
             <td><RefiChip status={l.refiStatus}/></td>
           </tr>
         ))}</tbody>
+        <tfoot>
+          <tr style={{background:"var(--bg)",fontWeight:700,borderTop:"2px solid var(--bd)"}}>
+            <td style={{fontSize:12,fontWeight:700,color:"var(--t1)",padding:"10px 12px"}}>TOTAL ({loans.length} loans)</td>
+            <td/>
+            <td><span className="td-n" style={{color:"var(--t3)",fontWeight:700}}>{f$(origTotal)}</span></td>
+            <td><span className="td-n" style={{fontWeight:700}}>{f$(tb)}</span></td>
+            <td><span className="td-n amber" style={{fontWeight:700}}>{fPct(wac)} avg</span></td>
+            <td/><td/>
+          </tr>
+        </tfoot>
       </table>
     </div>}
 
