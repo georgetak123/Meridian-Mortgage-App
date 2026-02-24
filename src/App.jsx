@@ -5377,16 +5377,16 @@ export default function App(){
     addr:             r.addr||"",
     lender:           r.lender||"",
     entity:           r.entity||"",
-    origBalance:      Number(r.orig_balance)||0,
-    currentBalance:   Number(r.current_balance)||0,
-    origDate:         r.close_date||"",        // close_date = origination date
-    rate:             Number(r.rate)||0,
+    origBalance:      Number(r.orig_balance)||0,       // Original Loan from Excel
+    currentBalance:   Number(r.current_balance)||Number(r.orig_balance)||0, // Current Balance from Excel
+    origDate:         r.close_date||"",
+    rate:             Number(r.rate)||0,                // Full decimal e.g. 6.669
     termMonths:       r.term_months!=null ? Number(r.term_months) : null,
     termYears:        r.term_months!=null ? Number(r.term_months)/12 : null,
     amortYears:       30,
     maturityDate:     r.maturity_date||"",
     ppp:              r.ppp||"",
-    prepay:           r.ppp||"",               // alias so rest of app still works
+    prepay:           r.ppp||"",
     ioPeriodMonths:   r.io_period_months!=null ? Number(r.io_period_months) : null,
     interestOnly:     r.io_period_months!=null && r.io_period_months > 0,
     loanType:         (r.io_period_months!=null && r.io_period_months > 0) ? "IO" : "Fixed",
