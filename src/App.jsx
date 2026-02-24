@@ -993,101 +993,173 @@ function RefiCalc({loans}){
   const en=useMemo(()=>loans.map(enrich),[loans]);
   const [selId,setSelId]=useState(String(loans[0]?.id||""));
   const sel=en.find(l=>String(l.id)===selId);
-  const [nr,setNr]=useState("6.50");const [na,setNa]=useState("30");const [cc,setCc]=useState("1.0");
-  const [quotes,setQuotes]=useState([{name:"Lender A",rate:"6.25",amort:"30",costs:"1.0"},{name:"Lender B",rate:"6.50",amort:"30",costs:"0.75"},{name:"Lender C",rate:"6.75",amort:"25",costs:"0.5"}]);
+  const cb=sel?.curBal||0, origBal=sel?.origBalance||0, cp=sel?.pmt||0;
+  const annualDS=cp*12;
+
+  // Lender quotes — blank by default
+  const blankQ=()=>({name:"",rate:"",amort:"",term:"",costs:"",notes:""});
+  const [quotes,setQuotes]=useState([blankQ(),blankQ(),blankQ()]);
   const setQ=(i,k,v)=>setQuotes(q=>q.map((x,j)=>j===i?{...x,[k]:v}:x));
-  const cb=sel?.curBal||0,cp=sel?.pmt||0;
-  const newPmt=calcPmt(cb,parseFloat(nr)||0,parseInt(na)*12||360);
-  const diff=cp-newPmt;
-  const ccD=cb*(parseFloat(cc)||0)/100;
-  const be=diff>0?Math.ceil(ccD/diff):null;
-  const net10=diff*120-ccD;
-  const ymEst=sel?.prepay==="Yield maintenance"?cb*(Math.max(0,sel.rate-parseFloat(nr)))/100*(Math.max(0,sel.daysLeft)/365)*0.7:null;
-  const defEst=sel?.prepay==="Defeasance"?cb*0.05:null;
-  const qcalc=quotes.map(q=>({...q,pmt:calcPmt(cb,parseFloat(q.rate)||0,parseInt(q.amort)*12||360),cc:cb*(parseFloat(q.costs)||0)/100}));
-  const bi=qcalc.reduce((b,q,i)=>q.pmt<qcalc[b].pmt?i:b,0);
+
+  const qcalc=quotes.map(q=>{
+    const r=parseFloat(q.rate)||0;
+    const a=parseInt(q.amort)*12||360;
+    const pmt=r>0&&a>0?calcPmt(cb,r,a):null;
+    const costAmt=cb*(parseFloat(q.costs)||0)/100;
+    const diff=pmt!=null?cp-pmt:null;
+    const be=diff&&diff>0&&costAmt>0?Math.ceil(costAmt/diff):null;
+    const net10=diff!=null?diff*120-costAmt:null;
+    const annNew=pmt!=null?pmt*12:null;
+    return{...q,pmt,costAmt,diff,be,net10,annNew};
+  });
+
+  const filledQuotes=qcalc.filter(q=>q.pmt!=null);
+  const bi=filledQuotes.length>0?qcalc.reduce((b,q,i)=>q.pmt!=null&&(qcalc[b].pmt==null||q.pmt<qcalc[b].pmt)?i:b,0):null;
+
+  const ymEst=sel?.prepay&&sel.prepay.toLowerCase().includes("yield")&&sel.daysLeft!=null?cb*(Math.max(0,(sel.rate-(parseFloat(filledQuotes[0]?.rate)||sel.rate)))/100)*(Math.max(0,sel.daysLeft)/365)*0.7:null;
+
+  const CARD={background:"var(--white)",border:"1px solid var(--bd)",borderRadius:12,padding:"16px 20px"};
+  const ROW={display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 0",borderBottom:"1px solid var(--bd2)"};
+  const LBL={fontSize:12,color:"var(--t3)"};
+  const VAL={fontSize:13,fontWeight:700,color:"var(--t1)"};
 
   return(<div>
     <div style={{marginBottom:20}}>
       <div style={{fontSize:22,fontWeight:700,color:"var(--t1)",marginBottom:4}}>Refinancing Calculator</div>
-      <div style={{fontSize:13,color:"var(--t3)"}}>Model any refi scenario, compare 3 lender quotes, and estimate exit penalties.</div>
-    </div>
-    <div className="calc-layout">
-      <div className="cp">
-        <div className="cp-t">Scenario Inputs</div>
-        <div className="cp-l">Select Loan</div>
-        <select className="cp-i" value={selId} onChange={e=>setSelId(e.target.value)}>
-          {loans.map(l=><option key={l.id} value={String(l.id)}>{l.addr}</option>)}
-        </select>
-        {sel&&<div className="cp-cur">
-          Balance: <strong>{f$(cb)}</strong><br/>
-          Rate: <strong>{fPct(sel.rate)}</strong> · Pmt: <strong>{f$(cp)}/mo</strong><br/>
-          Matures: <strong>{fDateS(sel.maturityDate)}</strong><br/>
-          Prepay: <strong>{sel.prepay||"None"}</strong>
-        </div>}
-        <div className="cp-l">New Interest Rate (%)</div>
-        <input className="cp-i" type="number" step="0.01" value={nr} onChange={e=>setNr(e.target.value)}/>
-        <div className="cp-l">New Amortization (years)</div>
-        <input className="cp-i" type="number" value={na} onChange={e=>setNa(e.target.value)}/>
-        <div className="cp-l">Closing Costs (% of balance)</div>
-        <input className="cp-i" type="number" step="0.1" value={cc} onChange={e=>setCc(e.target.value)}/>
-      </div>
-      <div className="cr-grid">
-        <div className="crcard">
-          <div className="crc-l">New Monthly Payment</div>
-          <div className={`crc-v${newPmt<cp?" green":newPmt>cp?" red":""}`}>{f$(newPmt)}</div>
-          <div className="crc-s">Current: {f$(cp)}/mo</div>
-        </div>
-        <div className={`crcard${diff>0?" green":diff<0?" red":""}`}>
-          <div className="crc-l">Monthly {diff>=0?"Savings":"Increase"}</div>
-          <div className={`crc-v${diff>0?" green":" red"}`}>{diff>=0?"":"-"}{f$(Math.abs(diff))}/mo</div>
-          <div className="crc-s">{f$(Math.abs(diff*12))}/year</div>
-        </div>
-        <div className="crcard">
-          <div className="crc-l">Closing Costs</div>
-          <div className="crc-v amber">{f$(ccD)}</div>
-          <div className="crc-s">{cc}% of {f$(cb)}</div>
-        </div>
-        <div className="crcard">
-          <div className="crc-l">Breakeven</div>
-          <div className={`crc-v${!be?" red":be<24?" green":be<48?" amber":" red"}`}>{be?`${be} months`:"Never"}</div>
-          <div className="crc-s">{be?`Costs recovered in ${be} mo`:"Costs exceed savings"}</div>
-        </div>
-        <div className="crcard full">
-          <div className="crc-l">10-Year Net Savings (after closing costs)</div>
-          <div className={`crc-v${net10>0?" green":" red"}`}>{net10>=0?"":"-"}{f$(Math.abs(net10))}</div>
-          <div className="crc-s">{diff>0?`${f$(diff)}/mo × 120 mo − ${f$(ccD)} closing costs`:"This refi loses money over 10 years at these terms"}</div>
-        </div>
-      </div>
+      <div style={{fontSize:13,color:"var(--t3)"}}>Select a property, review its current loan, then enter lender quotes to compare.</div>
     </div>
 
-    {sel&&(ymEst!=null||defEst!=null)&&<div style={{marginBottom:20}}>
-      <div className="sec-hdr"><div className="sec-t">Exit Penalty Estimate</div><div className="sec-m">Get exact figures from servicer before acting</div></div>
-      {ymEst!=null&&<div className="pen-box"><div className="pen-l">Estimated Yield Maintenance</div><div className="pen-v">{f$(ymEst)}</div><div className="pen-n">Simplified estimate using current Treasury spread. Get exact YM from {sel.servicerName||"servicer"} before proceeding.</div></div>}
-      {defEst!=null&&<div className="pen-box"><div className="pen-l">Estimated Defeasance Cost</div><div className="pen-v">{f$(defEst)}</div><div className="pen-n">~5% rule of thumb. Get exact quote from Chatham Financial or Thirty Capital before proceeding.</div></div>}
-    </div>}
+    {/* Loan selector */}
+    <div style={{...CARD,marginBottom:20}}>
+      <div style={{fontSize:11,fontWeight:700,color:"var(--t3)",textTransform:"uppercase",letterSpacing:".07em",marginBottom:8}}>Select Property</div>
+      <select style={{width:"100%",padding:"9px 12px",borderRadius:8,border:"1px solid var(--bd)",background:"var(--bg)",color:"var(--t1)",fontSize:13,fontWeight:600}}
+        value={selId} onChange={e=>setSelId(e.target.value)}>
+        {loans.map(l=><option key={l.id} value={String(l.id)}>{l.addr} — {l.lender}</option>)}
+      </select>
+    </div>
 
-    <div className="sec-hdr"><div className="sec-t">Compare 3 Lender Quotes</div><div className="sec-m">Edit any field — best rate highlighted</div></div>
-    <div className="q-grid">
-      {qcalc.map((q,i)=>(
-        <div key={i} className={`qcard${i===bi?" best":""}`}>
-          <div className="qc-hd">
-            <input className="qn-inp" value={q.name} onChange={e=>setQ(i,"name",e.target.value)}/>
-            {i===bi&&<span className="best-badge">BEST</span>}
-          </div>
-          {[["Rate (%)","rate","0.01"],["Amort (yr)","amort","1"],["Costs (%)","costs","0.1"]].map(([lbl,key,step])=>(
-            <div className="qrow" key={key}>
-              <span className="qk">{lbl}</span>
-              <input className="qi" type="number" step={step} value={q[key]} onChange={e=>setQ(i,key,e.target.value)}/>
-            </div>
-          ))}
-          <div className="qdiv"/>
-          <div className="qrow"><span className="qk">Monthly Pmt</span><span className={`qv${i===bi?" green":""}`}>{f$(q.pmt)}</span></div>
-          <div className="qrow"><span className="qk">vs. Current</span><span className={`qv${cp-q.pmt>0?" green":" red"}`}>{cp-q.pmt>=0?"+":""}{f$(cp-q.pmt)}/mo</span></div>
-          <div className="qrow"><span className="qk">Closing Costs</span><span className="qv">{f$(q.cc)}</span></div>
+    {sel&&<>
+    {/* ── CURRENT LOAN DETAILS ── */}
+    <div style={{fontSize:13,fontWeight:700,color:"var(--t1)",marginBottom:10,textTransform:"uppercase",letterSpacing:".05em"}}>📋 Current Loan — {sel.addr}</div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:24}}>
+      {[
+        ["Original Loan Amount",  f$(origBal),       ""],
+        ["Current Balance",       f$(cb),             "estimated"],
+        ["Interest Rate",         fPct(sel.rate),     sel.loanType||""],
+        ["Monthly Payment",       f$(cp),             "per month"],
+        ["Annual Debt Service",   f$(annualDS),       "per year"],
+        ["Maturity Date",         fDateS(sel.maturityDate)||"—", sel.daysLeft!=null?`${sel.daysLeft} days left`:""],
+        ["Close Date",            sel.origDate?new Date(sel.origDate).toLocaleDateString("en-US",{month:"short",year:"numeric"}):"—", ""],
+        ["Term",                  sel.termMonths?`${sel.termMonths} months`:(sel.termYears?`${sel.termYears} years`:"—"), ""],
+        ["Prepay Penalty",        sel.prepay||"None", "PPP"],
+        ["IO Period",             sel.ioPeriodMonths?`${sel.ioPeriodMonths} months`:"N/A", ""],
+        ["Lender",                sel.lender,         "current lender"],
+        ["Refi Status",           sel.refiStatus||"Not Started", ""],
+      ].map(([lbl,val,sub],i)=>(
+        <div key={i} style={{...CARD,padding:"14px 16px"}}>
+          <div style={{fontSize:9,fontWeight:700,color:"var(--t3)",textTransform:"uppercase",letterSpacing:".08em",marginBottom:6}}>{lbl}</div>
+          <div style={{fontSize:18,fontWeight:800,color:"var(--t1)",lineHeight:1.1}}>{val}</div>
+          {sub&&<div style={{fontSize:10,color:"var(--t3)",marginTop:3}}>{sub}</div>}
         </div>
       ))}
     </div>
+
+    {/* Exit penalty warning */}
+    {ymEst!=null&&<div style={{background:"#fffbeb",border:"1px solid #fde68a",borderRadius:10,padding:"12px 16px",marginBottom:20,fontSize:13}}>
+      <strong style={{color:"#92400e"}}>⚠️ Yield Maintenance Penalty:</strong>
+      <span style={{color:"#78350f",marginLeft:8}}>Est. {f$(ymEst)} — get exact figure from servicer before proceeding</span>
+    </div>}
+
+    {/* ── LENDER QUOTES ── */}
+    <div style={{fontSize:13,fontWeight:700,color:"var(--t1)",marginBottom:6,textTransform:"uppercase",letterSpacing:".05em"}}>💬 Potential Lender Quotes</div>
+    <div style={{fontSize:12,color:"var(--t3)",marginBottom:14}}>Enter quotes from lenders below. Leave blank if not yet received. Best deal highlights automatically.</div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:14,marginBottom:24}}>
+      {qcalc.map((q,i)=>{
+        const isBest=i===bi&&q.pmt!=null;
+        return(
+          <div key={i} style={{...CARD,border:`2px solid ${isBest?"var(--green)":"var(--bd)"}`,position:"relative"}}>
+            {isBest&&<div style={{position:"absolute",top:-10,left:16,background:"var(--green)",color:"#fff",fontSize:9,fontWeight:800,padding:"2px 10px",borderRadius:20,letterSpacing:".06em"}}>BEST DEAL</div>}
+            {/* Lender name */}
+            <input placeholder="Lender name" value={q.name} onChange={e=>setQ(i,"name",e.target.value)}
+              style={{width:"100%",border:"none",borderBottom:"2px solid var(--bd2)",background:"transparent",fontSize:14,fontWeight:700,color:"var(--t1)",padding:"4px 0",marginBottom:14,outline:"none"}}/>
+            {/* Input fields */}
+            {[
+              ["Rate (%)",         "rate",  "0.001","e.g. 6.250"],
+              ["Amortization (yr)","amort", "1",    "e.g. 30"],
+              ["Loan Term (yr)",   "term",  "1",    "e.g. 7"],
+              ["Closing Costs (%)", "costs","0.1",  "e.g. 1.0"],
+            ].map(([lbl,key,step,ph])=>(
+              <div key={key} style={{marginBottom:10}}>
+                <div style={{fontSize:10,color:"var(--t3)",fontWeight:600,marginBottom:3}}>{lbl}</div>
+                <input type="number" step={step} placeholder={ph} value={q[key]} onChange={e=>setQ(i,key,e.target.value)}
+                  style={{width:"100%",padding:"8px 10px",borderRadius:7,border:"1px solid var(--bd)",background:"var(--bg)",color:"var(--t1)",fontSize:13,fontWeight:600,outline:"none"}}/>
+              </div>
+            ))}
+            <input placeholder="Notes (optional)" value={q.notes} onChange={e=>setQ(i,"notes",e.target.value)}
+              style={{width:"100%",padding:"6px 10px",borderRadius:7,border:"1px solid var(--bd)",background:"var(--bg)",color:"var(--t3)",fontSize:11,outline:"none",marginBottom:12}}/>
+            {/* Results — only show if rate entered */}
+            {q.pmt!=null&&<>
+              <div style={{borderTop:"2px solid var(--bd2)",paddingTop:12,marginTop:4}}>
+                <div style={{fontSize:10,fontWeight:700,color:"var(--t3)",textTransform:"uppercase",letterSpacing:".06em",marginBottom:8}}>Projected Outcome</div>
+                {[
+                  ["New Monthly Pmt",   f$(q.pmt),                    q.diff>0?"green":q.diff<0?"red":""],
+                  ["vs. Current",       `${q.diff>=0?"+":""}${f$(q.diff)}/mo`, q.diff>=0?"green":"red"],
+                  ["Annual DS",         f$(q.annNew),                 ""],
+                  ["Annual Savings",    f$(Math.abs(q.diff*12)),      q.diff>0?"green":q.diff<0?"red":""],
+                  ["Closing Costs",     f$(q.costAmt),                "amber"],
+                  ["Breakeven",         q.be?`${q.be} months`:(q.costAmt===0?"Immediate":"N/A"), q.be&&q.be<24?"green":q.be&&q.be<48?"amber":""],
+                  ["10-yr Net Savings", q.net10!=null?`${q.net10>=0?"":"-"}${f$(Math.abs(q.net10))}`:"—", q.net10!=null&&q.net10>0?"green":"red"],
+                ].map(([lbl,val,cls])=>(
+                  <div key={lbl} style={{...ROW}}>
+                    <span style={LBL}>{lbl}</span>
+                    <span style={{...VAL,color:cls==="green"?"var(--green)":cls==="red"?"var(--red)":cls==="amber"?"var(--amber)":"var(--t1)"}}>{val}</span>
+                  </div>
+                ))}
+              </div>
+            </>}
+            {q.pmt==null&&<div style={{textAlign:"center",padding:"20px 0",color:"var(--t4)",fontSize:11}}>Enter rate + amortization<br/>to see projections</div>}
+          </div>
+        );
+      })}
+    </div>
+
+    {/* ── COMPARISON SUMMARY — only if 2+ quotes filled ── */}
+    {filledQuotes.length>=2&&<>
+      <div style={{fontSize:13,fontWeight:700,color:"var(--t1)",marginBottom:10,textTransform:"uppercase",letterSpacing:".05em"}}>📊 Side-by-Side Comparison</div>
+      <div style={{...CARD,marginBottom:24,overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+          <thead>
+            <tr>
+              <th style={{padding:"8px 12px",textAlign:"left",fontSize:10,color:"var(--t3)",fontWeight:700,textTransform:"uppercase",borderBottom:"2px solid var(--bd)"}}>Metric</th>
+              <th style={{padding:"8px 12px",textAlign:"center",fontSize:10,color:"var(--t3)",fontWeight:700,textTransform:"uppercase",borderBottom:"2px solid var(--bd)"}}>Current Loan</th>
+              {qcalc.filter(q=>q.pmt!=null).map((q,i)=>(
+                <th key={i} style={{padding:"8px 12px",textAlign:"center",fontSize:10,fontWeight:700,textTransform:"uppercase",borderBottom:"2px solid var(--bd)",color:i===bi?"var(--green)":"var(--t3)"}}>{q.name||`Quote ${i+1}`}{i===bi?" ⭐":""}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {[
+              ["Rate",          fPct(sel.rate),    qcalc.filter(q=>q.pmt!=null).map(q=>fPct(parseFloat(q.rate)))],
+              ["Monthly Pmt",   f$(cp),            qcalc.filter(q=>q.pmt!=null).map(q=>f$(q.pmt))],
+              ["Annual DS",     f$(annualDS),      qcalc.filter(q=>q.pmt!=null).map(q=>f$(q.annNew))],
+              ["Monthly Δ",     "—",               qcalc.filter(q=>q.pmt!=null).map(q=>`${q.diff>=0?"+":""}${f$(q.diff)}`)],
+              ["Closing Costs", "—",               qcalc.filter(q=>q.pmt!=null).map(q=>f$(q.costAmt))],
+              ["Breakeven",     "—",               qcalc.filter(q=>q.pmt!=null).map(q=>q.be?`${q.be} mo`:"N/A")],
+            ].map(([lbl,cur,vals])=>(
+              <tr key={lbl} style={{borderBottom:"1px solid var(--bd2)"}}>
+                <td style={{padding:"9px 12px",color:"var(--t3)",fontWeight:600}}>{lbl}</td>
+                <td style={{padding:"9px 12px",textAlign:"center",fontWeight:700,color:"var(--t1)"}}>{cur}</td>
+                {vals.map((v,i)=>(
+                  <td key={i} style={{padding:"9px 12px",textAlign:"center",fontWeight:700,color:i===bi?"var(--green)":"var(--t1)"}}>{v}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>}
+    </>}
+    {!sel&&<div style={{textAlign:"center",padding:"60px",color:"var(--t3)"}}>Select a property above to begin</div>}
   </div>);
 }
 
@@ -1200,31 +1272,70 @@ function LoanModal({onSave,onClose,initial}){
 
 /* ─────────── OVERVIEW ─────────── */
 function Overview({loans,onSelect,onAdd,dbStatus,dbError}){
+  const [ovTab,setOvTab]=useState("loans"); // loans | actions
   const en=useMemo(()=>loans.map(enrich),[loans]);
-  const tb=loans.reduce((s,l)=>s+(l.currentBalance||l.origBalance||0),0);
-  const wac=en.reduce((s,l)=>s+l.rate*l.origBalance,0)/en.reduce((s,l)=>s+l.origBalance,1);
-  const urg=en.filter(l=>l.status==="urgent"||l.status==="matured");
-  const inRefi=en.filter(l=>l.refiStatus!=="Not Started"&&l.refiStatus!=="Closed");
+
+  // ── KPIs ────────────────────────────────────────────────────────────────────
+  const tb        = loans.reduce((s,l)=>s+(l.currentBalance||l.origBalance||0),0);
+  const origTotal = loans.reduce((s,l)=>s+(l.origBalance||0),0);
+  const wac       = en.reduce((s,l)=>s+l.rate*(l.currentBalance||l.origBalance||0),0)/Math.max(1,tb);
+  const monthlyDS = en.reduce((s,l)=>s+(isNaN(l.pmt)?0:l.pmt),0);
+  const annualDS  = monthlyDS*12;
+  const urg       = en.filter(l=>l.status==="urgent"||l.status==="matured");
+  const matured   = en.filter(l=>l.status==="matured");
+  const inRefi    = en.filter(l=>l.refiStatus&&l.refiStatus!=="Not Started"&&l.refiStatus!=="Closed");
+  const ioLoans   = en.filter(l=>l.interestOnly||l.loanType==="IO");
+  const ioDebt    = ioLoans.reduce((s,l)=>s+(l.currentBalance||l.origBalance||0),0);
+  const fixedLoans= en.filter(l=>!l.interestOnly&&l.loanType!=="IO"&&l.loanType!=="ARM");
+  const avgLoan   = loans.length>0?tb/loans.length:0;
+  const payingDown= origTotal>0?((origTotal-tb)/origTotal*100):0;
+
+  // Lender concentration — top lender by balance
+  const byLender={};
+  loans.forEach(l=>{const k=l.lender||"Unknown";byLender[k]=(byLender[k]||0)+(l.currentBalance||l.origBalance||0);});
+  const topLender=Object.entries(byLender).sort((a,b)=>b[1]-a[1])[0]||["—",0];
+  const topLenderPct=tb>0?(topLender[1]/tb*100):0;
+
+  // Maturities by year
+  const byYear={};
+  en.forEach(l=>{
+    if(!l.maturityDate)return;
+    const y=new Date(l.maturityDate).getFullYear();
+    if(isNaN(y))return;
+    if(!byYear[y])byYear[y]={count:0,bal:0,urgent:0,loans:[]};
+    byYear[y].count++;
+    byYear[y].bal+=(l.currentBalance||l.origBalance||0);
+    if(l.status==="urgent"||l.status==="matured")byYear[y].urgent++;
+    byYear[y].loans.push(l);
+  });
+  const matByYear=Object.entries(byYear).sort((a,b)=>Number(a[0])-Number(b[0]));
+
+  // Alerts
   const alerts=[];
-  en.filter(l=>l.status==="matured").forEach(l=>alerts.push({cls:"al-red",ic:"🔴",hl:`${l.addr} — PAST MATURITY`,detail:`${f$(l.curBal)} · ${l.lender} · ${Math.abs(l.daysLeft)} days overdue`,action:"Contact lender immediately",id:l.id}));
-  en.filter(l=>l.status==="urgent").forEach(l=>alerts.push({cls:"al-red",ic:"⚠",hl:`${l.addr} — matures ${fDateS(l.maturityDate)}`,detail:`${f$(l.curBal)} · ${l.lender} · ${l.daysLeft} days remaining`,action:"Begin refinancing now",id:l.id}));
+  en.filter(l=>l.status==="matured").forEach(l=>alerts.push({cls:"al-red",ic:"🔴",hl:`${l.addr} — PAST MATURITY`,detail:`${f$(l.currentBalance||l.curBal)} · ${l.lender} · ${l.daysLeft!=null?Math.abs(l.daysLeft)+" days overdue":""}`,action:"Contact lender immediately",id:l.id}));
+  en.filter(l=>l.status==="urgent").forEach(l=>alerts.push({cls:"al-red",ic:"⚠",hl:`${l.addr} — matures ${fDateS(l.maturityDate)}`,detail:`${f$(l.currentBalance||l.curBal)} · ${l.lender} · ${l.daysLeft!=null?l.daysLeft+" days remaining":""}`,action:"Begin refinancing now",id:l.id}));
   en.filter(l=>l.dscr&&l.dscrCovenant&&l.dscr<l.dscrCovenant).forEach(l=>alerts.push({cls:"al-red",ic:"📊",hl:`${l.addr} — DSCR below covenant (${l.dscr?.toFixed(2)}x vs ${l.dscrCovenant}x)`,detail:l.lender,action:"Address NOI shortfall or request waiver",id:l.id}));
   en.filter(l=>l.capExpiring).forEach(l=>alerts.push({cls:"al-amber",ic:"📉",hl:`${l.addr} — rate cap expires ${fDateS(l.capExpiry)}`,detail:"Cap expires before loan maturity",action:"Purchase new cap or begin refi",id:l.id}));
   en.filter(l=>l.status==="soon").forEach(l=>alerts.push({cls:"al-amber",ic:"◎",hl:`${l.addr} — matures ${fDateS(l.maturityDate)}`,detail:l.daysLeft!=null?`${Math.round(l.daysLeft/30)} months away`:"",action:"Begin lender conversations",id:l.id}));
+
+  const SC=(label,val,sub,cls="")=>(
+    <div className="scard">
+      <div className="sc-lbl">{label}</div>
+      <div className={`sc-val${cls?" "+cls:""}`}>{val}</div>
+      {sub&&<div className="sc-sub">{sub}</div>}
+    </div>
+  );
 
   if(loans.length===0){return(<div>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
       <div><div style={{fontSize:22,fontWeight:700,color:"var(--t1)"}}>Portfolio Overview</div><div style={{fontSize:13,color:"var(--t3)",marginTop:2}}>Brooklyn, NY · Debt Management</div></div>
     </div>
-    {/* DB Status Banner */}
     {dbStatus==="error"&&<div style={{background:"#fef2f2",border:"1px solid #fca5a5",borderRadius:10,padding:"14px 18px",marginBottom:16,fontSize:13}}>
       <strong style={{color:"#dc2626"}}>⚠️ Database connection error:</strong>
       <div style={{color:"#991b1b",marginTop:4,fontFamily:"monospace",fontSize:12}}>{dbError}</div>
       <div style={{color:"#7f1d1d",marginTop:6}}>Go to Supabase → SQL Editor and run <strong>setup_loans_table_v2.sql</strong> then <strong>insert_loans_v2.sql</strong></div>
     </div>}
-    {dbStatus==="loading"&&<div style={{background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:10,padding:"14px 18px",marginBottom:16,fontSize:13,color:"#1d4ed8"}}>
-      ⏳ Connecting to database...
-    </div>}
+    {dbStatus==="loading"&&<div style={{background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:10,padding:"14px 18px",marginBottom:16,fontSize:13,color:"#1d4ed8"}}>⏳ Connecting to database...</div>}
     {dbStatus==="empty"&&<div style={{background:"#fffbeb",border:"1px solid #fde68a",borderRadius:10,padding:"14px 18px",marginBottom:16,fontSize:13}}>
       <strong style={{color:"#92400e"}}>📋 Database connected but no loans found.</strong>
       <div style={{color:"#78350f",marginTop:4}}>Run <strong>insert_loans_v2.sql</strong> in Supabase SQL Editor to load your 77 loans — or add them manually below.</div>
@@ -1238,39 +1349,129 @@ function Overview({loans,onSelect,onAdd,dbStatus,dbError}){
   </div>);}
 
   return(<div>
+    {/* ── Header ── */}
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
-      <div><div style={{fontSize:22,fontWeight:700,color:"var(--t1)"}}>Portfolio Overview</div><div style={{fontSize:13,color:"var(--t3)",marginTop:2}}>Brooklyn, NY · {loans.length} loans · Feb 2026</div></div>
+      <div>
+        <div style={{fontSize:22,fontWeight:700,color:"var(--t1)"}}>Portfolio Overview</div>
+        <div style={{fontSize:13,color:"var(--t3)",marginTop:2}}>Brooklyn, NY · {loans.length} loans · {new Date().toLocaleDateString("en-US",{month:"long",year:"numeric"})}</div>
+      </div>
       <button className="btn-dark" onClick={onAdd}>+ Add Loan</button>
     </div>
-    <div className="ov-stats">
-      <div className="scard"><div className="sc-lbl">Total Debt</div><div className="sc-val">{f$(tb)}</div><div className="sc-sub">est. current balances</div></div>
-      <div className="scard"><div className="sc-lbl">Urgent Maturities</div><div className={`sc-val${urg.length>0?" red":""}`}>{urg.length}</div><div className="sc-sub">within 6 months</div></div>
-      <div className="scard"><div className="sc-lbl">Wtd. Avg. Rate</div><div className="sc-val amber">{fPct(wac)}</div><div className="sc-sub">vs 6.50% market</div></div>
-      <div className="scard"><div className="sc-lbl">Refi Pipeline</div><div className="sc-val blue">{inRefi.length}</div><div className="sc-sub">loans in process</div></div>
+
+    {/* ── KPI Row 1 — Debt & Cash Flow ── */}
+    <div style={{fontSize:11,fontWeight:700,color:"var(--t3)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:8}}>Debt & Cash Flow</div>
+    <div className="ov-stats" style={{gridTemplateColumns:"repeat(4,1fr)",marginBottom:14}}>
+      {SC("Total Debt",f$(tb),"sum of current balances")}
+      {SC("Monthly Debt Service",f$(monthlyDS),"est. all loans combined")}
+      {SC("Annual Debt Service",f$(annualDS),"total yearly payments")}
+      {SC("Avg Loan Size",f$(avgLoan),`across ${loans.length} loans`)}
     </div>
-    {alerts.length>0&&<><div style={{fontSize:13,fontWeight:700,color:"var(--t1)",marginBottom:8}}>Action Required</div>
-    <div className="al-list">{alerts.slice(0,6).map((a,i)=>(
-      <div key={i} className={`al-row ${a.cls}`} onClick={()=>onSelect(loans.find(l=>l.id===a.id))}>
-        <div className="al-ic">{a.ic}</div>
-        <div><div className="al-hl">{a.hl}</div><div className="al-detail">{a.detail}</div><div className="al-action">→ {a.action}</div></div>
+
+    {/* ── KPI Row 2 — Rate & Structure ── */}
+    <div style={{fontSize:11,fontWeight:700,color:"var(--t3)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:8}}>Rate & Structure</div>
+    <div className="ov-stats" style={{gridTemplateColumns:"repeat(4,1fr)",marginBottom:14}}>
+      {SC("Wtd. Avg. Rate",fPct(wac),"weighted by balance","amber")}
+      {SC("IO Exposure",f$(ioDebt),`${ioLoans.length} interest-only loans`,"amber")}
+      {SC("Amortizing Debt",f$(fixedLoans.reduce((s,l)=>s+(l.currentBalance||l.origBalance||0),0)),`${fixedLoans.length} fixed/amortizing loans`)}
+      {SC("Principal Paid Down",`${payingDown.toFixed(1)}%`,`$${((origTotal-tb)/1e6).toFixed(1)}M from original`,"green")}
+    </div>
+
+    {/* ── KPI Row 3 — Risk ── */}
+    <div style={{fontSize:11,fontWeight:700,color:"var(--t3)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:8}}>Maturity Risk</div>
+    <div className="ov-stats" style={{gridTemplateColumns:"repeat(4,1fr)",marginBottom:20}}>
+      {SC("Past Maturity",matured.length,matured.length>0?"urgent — contact lenders":"all current","red")}
+      {SC("Maturing ≤6 Months",urg.length,`$${(urg.reduce((s,l)=>s+(l.currentBalance||l.origBalance||0),0)/1e6).toFixed(1)}M at risk`,urg.length>0?"red":"")}
+      {SC("Refi In Progress",inRefi.length,"loans being refinanced","blue")}
+      {SC("Top Lender Concentration",topLender[0].length>12?topLender[0].slice(0,12)+"…":topLender[0],`${topLenderPct.toFixed(0)}% of portfolio`)}
+    </div>
+
+    {/* ── Urgent Maturities (within 6 months) ── */}
+    {urg.length>0&&<>
+      <div style={{fontSize:13,fontWeight:700,color:"var(--t1)",marginBottom:8,display:"flex",alignItems:"center",gap:8}}>
+        🔴 Urgent Maturities — Within 6 Months
+        <span style={{fontSize:11,fontWeight:400,color:"var(--t3)"}}>{f$(urg.reduce((s,l)=>s+(l.currentBalance||l.origBalance||0),0))} total exposure</span>
       </div>
-    ))}</div></>}
-    <div style={{fontSize:13,fontWeight:700,color:"var(--t1)",marginBottom:10}}>All Loans</div>
-    <div className="tbl-wrap">
+      <div style={{border:"1px solid #fecaca",borderRadius:10,overflow:"hidden",marginBottom:20}}>
+        <table className="tbl" style={{margin:0}}>
+          <thead><tr style={{background:"#fef2f2"}}>
+            <th>Address</th><th>Lender</th><th>Balance</th><th>Rate</th><th>Maturity</th><th>Days Left</th><th>Refi Status</th>
+          </tr></thead>
+          <tbody>{[...urg].sort((a,b)=>(a.daysLeft??9999)-(b.daysLeft??9999)).map(l=>(
+            <tr key={l.id} onClick={()=>onSelect(loans.find(x=>x.id===l.id))} style={{cursor:"pointer"}}>
+              <td><div className="td-a">{l.addr}</div><div className="td-b">{l.lender}</div></td>
+              <td><span style={{fontSize:12,color:"var(--t2)"}}>{l.lender}</span></td>
+              <td><span className="td-n">{f$(l.currentBalance||l.curBal)}</span></td>
+              <td><span className="td-n red">{fPct(l.rate)}</span></td>
+              <td><span style={{fontSize:12}}>{fDateS(l.maturityDate)||"—"}</span></td>
+              <td><span style={{fontSize:12,fontWeight:700,color:l.daysLeft<0?"#dc2626":"#d97706"}}>{l.daysLeft!=null?(l.daysLeft<0?`${Math.abs(l.daysLeft)}d overdue`:`${l.daysLeft}d left`):"—"}</span></td>
+              <td><RefiChip status={l.refiStatus}/></td>
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
+    </>}
+
+    {/* ── Maturities by Year ── */}
+    <div style={{fontSize:13,fontWeight:700,color:"var(--t1)",marginBottom:10}}>Maturities by Year</div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:8,marginBottom:20}}>
+      {matByYear.map(([yr,d])=>{
+        const isUrgent=Number(yr)<=2026;
+        const isSoon=Number(yr)===2027;
+        const bg=isUrgent?"#fef2f2":isSoon?"#fffbeb":"var(--white)";
+        const border=isUrgent?"#fecaca":isSoon?"#fde68a":"var(--bd)";
+        const valColor=isUrgent?"#dc2626":isSoon?"#d97706":"var(--t1)";
+        return(
+          <div key={yr} style={{background:bg,border:`1px solid ${border}`,borderRadius:10,padding:"12px 14px"}}>
+            <div style={{fontSize:11,fontWeight:700,color:"var(--t3)",marginBottom:4}}>{yr}</div>
+            <div style={{fontSize:20,fontWeight:800,color:valColor,marginBottom:2}}>{d.count}</div>
+            <div style={{fontSize:11,color:"var(--t3)"}}>{f$(d.bal)}</div>
+            {d.urgent>0&&<div style={{fontSize:10,color:"#dc2626",marginTop:4,fontWeight:600}}>⚠ {d.urgent} urgent</div>}
+          </div>
+        );
+      })}
+    </div>
+
+    {/* ── Tabs: All Loans / Action Required ── */}
+    <div style={{display:"flex",gap:0,borderBottom:"2px solid var(--bd)",marginBottom:14}}>
+      {[["loans",`All Loans (${loans.length})`],["actions",`Action Required (${alerts.length})`]].map(([id,lbl])=>(
+        <button key={id} onClick={()=>setOvTab(id)} style={{
+          padding:"8px 18px",border:"none",borderBottom:`2px solid ${ovTab===id?"var(--t1)":"transparent"}`,
+          marginBottom:-2,background:"transparent",fontSize:13,fontWeight:ovTab===id?700:400,
+          color:ovTab===id?"var(--t1)":"var(--t3)",cursor:"pointer"
+        }}>{lbl}</button>
+      ))}
+    </div>
+
+    {/* All Loans tab */}
+    {ovTab==="loans"&&<div className="tbl-wrap">
       <table className="tbl">
-        <thead><tr><th>Address</th><th>Lender</th><th>Balance</th><th>Rate</th><th>Maturity</th><th>Refi Status</th></tr></thead>
-        <tbody>{[...en].sort((a,b)=>a.daysLeft-b.daysLeft).map(l=>(
+        <thead><tr><th>Address</th><th>Lender</th><th>Orig Balance</th><th>Cur Balance</th><th>Rate</th><th>Maturity</th><th>Refi Status</th></tr></thead>
+        <tbody>{[...en].sort((a,b)=>(a.daysLeft??99999)-(b.daysLeft??99999)).map(l=>(
           <tr key={l.id} onClick={()=>onSelect(loans.find(x=>x.id===l.id))}>
-            <td><div className="td-a">{l.addr}</div><div className="td-b">{l.entity||l.lenderType}</div></td>
+            <td><div className="td-a">{l.addr}</div><div className="td-b">{l.entity||""}</div></td>
             <td><span style={{fontSize:12,color:"var(--t2)"}}>{l.lender}</span></td>
-            <td><span className="td-n">{f$(l.curBal)}</span></td>
+            <td><span className="td-n" style={{color:"var(--t3)"}}>{f$(l.origBalance)}</span></td>
+            <td><span className="td-n">{f$(l.currentBalance||l.curBal)}</span></td>
             <td><span className={`td-n${l.rate>7?" red":l.rate>5?" amber":" green"}`}>{fPct(l.rate)}</span></td>
             <td><MatChip loan={l}/></td>
             <td><RefiChip status={l.refiStatus}/></td>
           </tr>
         ))}</tbody>
       </table>
-    </div>
+    </div>}
+
+    {/* Action Required tab */}
+    {ovTab==="actions"&&<div>
+      {alerts.length===0
+        ?<div style={{padding:"40px",textAlign:"center",color:"var(--t3)",fontSize:13}}>✅ No actions required — portfolio looks clean.</div>
+        :<div className="al-list">{alerts.map((a,i)=>(
+          <div key={i} className={`al-row ${a.cls}`} onClick={()=>onSelect(loans.find(l=>l.id===a.id))}>
+            <div className="al-ic">{a.ic}</div>
+            <div><div className="al-hl">{a.hl}</div><div className="al-detail">{a.detail}</div><div className="al-action">→ {a.action}</div></div>
+          </div>
+        ))}</div>
+      }
+    </div>}
   </div>);
 }
 
@@ -1281,7 +1482,7 @@ function AllLoans({loans,onSelect,onAdd}){
   const [sort,setSort]=useState({k:"daysLeft",d:1});
   const en=useMemo(()=>loans.map(enrich),[loans]);
   const rows=useMemo(()=>en.filter(l=>{
-    const sf=filt==="all"||filt===l.status||filt===l.loanType;
+    const sf=filt==="all"||filt===l.status||filt===l.loanType||filt===l.interestOnly&&filt==="IO";
     const ss=!search||l.addr.toLowerCase().includes(search.toLowerCase())||l.lender.toLowerCase().includes(search.toLowerCase());
     return sf&&ss;
   }).sort((a,b)=>(a[sort.k]>b[sort.k]?1:-1)*sort.d),[en,filt,search,sort]);
@@ -1310,10 +1511,19 @@ function AllLoans({loans,onSelect,onAdd}){
         <button className="btn-dark" onClick={onAdd}>+ Add Loan</button>
       </div>
     </div>
-    <div className="frow">
+    <div className="frow" style={{flexWrap:"wrap",gap:6}}>
       <input className="f-inp" placeholder="Search address or lender…" value={search} onChange={e=>setSearch(e.target.value)}/>
-      {[["all","All"],["urgent","Urgent"],["ok","Current"],["Fixed","Fixed"],["ARM","ARM"],["Bridge","Bridge"]].map(([id,lbl])=>(
+      <span style={{fontSize:10,color:"var(--t3)",alignSelf:"center",fontWeight:600,marginLeft:4}}>STATUS:</span>
+      {[["all","All"],["urgent","🔴 Urgent"],["soon","🟡 Soon"],["ok","✅ Current"],["matured","⚫ Matured"]].map(([id,lbl])=>(
         <button key={id} className={`fb${filt===id?" fa":""}`} onClick={()=>setFilt(id)}>{lbl}</button>
+      ))}
+      <span style={{fontSize:10,color:"var(--t3)",alignSelf:"center",fontWeight:600,marginLeft:4}}>TYPE:</span>
+      {[["Fixed","Fixed"],["IO","IO"],["ARM","ARM"],["Bridge","Bridge"]].map(([id,lbl])=>(
+        <button key={id} className={`fb${filt===id?" fa":""}`} onClick={()=>setFilt(id)}>{lbl}</button>
+      ))}
+      <span style={{fontSize:10,color:"var(--t3)",alignSelf:"center",fontWeight:600,marginLeft:4}}>SORT:</span>
+      {[["daysLeft","Maturity"],["curBal","Balance"],["rate","Rate"],["addr","A–Z"],["lender","Lender"]].map(([k,lbl])=>(
+        <button key={k} className={`fb${sort.k===k?" fa":""}`} onClick={()=>setSort(s=>({k,d:s.k===k?-s.d:1}))}>{lbl}{sort.k===k?(sort.d===1?" ↑":" ↓"):""}</button>
       ))}
       <span className="f-ct">{rows.length} of {loans.length}</span>
     </div>
@@ -2506,13 +2716,26 @@ function MaturityTimeline({loans,onSelect}){
 /* ─────────── LOAN MATURITY SCHEDULE ─────────── */
 function LoanMaturitySchedule({loans,onSelect}){
   const en=useMemo(()=>loans.map(enrich),[loans]);
-  const [viewMode,setViewMode]=useState("table"); // table | timeline
+  const [viewMode,setViewMode]=useState("table");
   const [filterYr,setFilterYr]=useState("ALL");
+  const [filterStatus,setFilterStatus]=useState("ALL");
+  const [filterLender,setFilterLender]=useState("ALL");
   const [sort,setSort]=useState({col:"daysLeft",dir:1});
+  const [search,setSearch]=useState("");
 
-  const years=[...new Set(en.map(l=>new Date(l.maturityDate).getFullYear()))].sort();
-  const filtered=filterYr==="ALL"?en:en.filter(l=>new Date(l.maturityDate).getFullYear()===parseInt(filterYr));
-  const sorted=[...filtered].sort((a,b)=>(a[sort.col]>b[sort.col]?1:-1)*sort.dir);
+  const years=[...new Set(en.filter(l=>l.maturityDate).map(l=>new Date(l.maturityDate).getFullYear()))].sort();
+  const lenders=[...new Set(en.map(l=>l.lender).filter(Boolean))].sort();
+  const filtered=en.filter(l=>{
+    const yr=filterYr==="ALL"||( l.maturityDate && new Date(l.maturityDate).getFullYear()===parseInt(filterYr));
+    const st=filterStatus==="ALL"||l.status===filterStatus;
+    const ln=filterLender==="ALL"||l.lender===filterLender;
+    const sr=!search||l.addr.toLowerCase().includes(search.toLowerCase())||l.lender.toLowerCase().includes(search.toLowerCase());
+    return yr&&st&&ln&&sr;
+  });
+  const sorted=[...filtered].sort((a,b)=>{
+    const av=a[sort.col]??Infinity, bv=b[sort.col]??Infinity;
+    return(av>bv?1:av<bv?-1:0)*sort.dir;
+  });
 
   const setS=col=>setSort(s=>({col,dir:s.col===col?-s.dir:1}));
   const arrow=col=>sort.col===col?(sort.dir===1?"↑":"↓"):"";
@@ -2573,24 +2796,15 @@ function LoanMaturitySchedule({loans,onSelect}){
     </div>
 
     {/* Controls */}
-    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
-      {/* Year filter */}
-      <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-        {["ALL",...years.map(String)].map(y=>(
-          <button key={y} onClick={()=>setFilterYr(y)} style={{
-            padding:"5px 14px",borderRadius:20,border:"1px solid",fontSize:11,fontWeight:600,cursor:"pointer",
-            background:filterYr===y?"var(--t1)":"var(--white)",
-            color:filterYr===y?"var(--white)":"var(--t3)",
-            borderColor:filterYr===y?"var(--t1)":"var(--bd)",
-          }}>{y==="ALL"?"All Years":y}</button>
-        ))}
-      </div>
-      <div style={{display:"flex",gap:8}}>
+    <div style={{marginBottom:14,display:"flex",flexDirection:"column",gap:8}}>
+      {/* Row 1: search + view toggle + export */}
+      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+        <input className="f-inp" placeholder="Search address or lender…" value={search} onChange={e=>setSearch(e.target.value)} style={{maxWidth:220}}/>
+        <div style={{flex:1}}/>
         <button className="btn-light" style={{fontSize:11}} onClick={()=>downloadCSV("maturity-schedule.csv",
           ["Address","Lender","Balance","Rate","Type","Maturity Date","Days Left","Status","Prepay","Refi Status"],
-          sorted.map(l=>[l.addr,l.lender,l.curBal.toFixed(0),l.rate,l.loanType,l.maturityDate,l.daysLeft,l.status,l.prepay||"",l.refiStatus||""])
+          sorted.map(l=>[l.addr,l.lender,l.curBal.toFixed(0),l.rate,l.loanType,l.maturityDate||"",l.daysLeft!=null?l.daysLeft:"",l.status,l.prepay||"",l.refiStatus||""])
         )}>⬇ Export CSV</button>
-        {/* View toggle */}
         <div style={{display:"flex",gap:2,background:"var(--white)",border:"1px solid var(--bd)",borderRadius:8,padding:2}}>
           {[["table","📋 Table"],["timeline","🗓 Year View"]].map(([id,lbl])=>(
             <button key={id} onClick={()=>setViewMode(id)} style={{
@@ -2599,6 +2813,28 @@ function LoanMaturitySchedule({loans,onSelect}){
             }}>{lbl}</button>
           ))}
         </div>
+      </div>
+      {/* Row 2: filter pills */}
+      <div className="frow" style={{flexWrap:"wrap",gap:5}}>
+        <span style={{fontSize:10,color:"var(--t3)",alignSelf:"center",fontWeight:600}}>STATUS:</span>
+        {[["ALL","All"],["matured","⚫ Matured"],["urgent","🔴 Urgent"],["soon","🟡 Soon"],["ok","✅ Long-term"],["unknown","No Date"]].map(([id,lbl])=>(
+          <button key={id} className={`fb${filterStatus===id?" fa":""}`} onClick={()=>setFilterStatus(id)}>{lbl}</button>
+        ))}
+        <span style={{fontSize:10,color:"var(--t3)",alignSelf:"center",fontWeight:600,marginLeft:8}}>YEAR:</span>
+        {["ALL",...years.map(String)].map(y=>(
+          <button key={y} className={`fb${filterYr===y?" fa":""}`} onClick={()=>setFilterYr(y)}>{y==="ALL"?"All Years":y}</button>
+        ))}
+        <span style={{fontSize:10,color:"var(--t3)",alignSelf:"center",fontWeight:600,marginLeft:8}}>SORT:</span>
+        {[["daysLeft","Days Left"],["curBal","Balance ↕"],["rate","Rate ↕"],["maturityDate","Maturity Date"],["addr","A–Z"],["lender","Lender"]].map(([k,lbl])=>(
+          <button key={k} className={`fb${sort.col===k?" fa":""}`} onClick={()=>setSort(s=>({col:k,dir:s.col===k?-s.dir:1}))}>{lbl}{sort.col===k?(sort.dir===1?" ↑":" ↓"):""}</button>
+        ))}
+        <span style={{fontSize:10,color:"var(--t3)",alignSelf:"center",fontWeight:600,marginLeft:8}}>LENDER:</span>
+        <select style={{fontSize:11,padding:"4px 8px",borderRadius:6,border:"1px solid var(--bd)",background:"var(--white)",color:"var(--t2)",cursor:"pointer"}}
+          value={filterLender} onChange={e=>setFilterLender(e.target.value)}>
+          <option value="ALL">All Lenders</option>
+          {lenders.map(l=><option key={l} value={l}>{l}</option>)}
+        </select>
+        <span style={{fontSize:10,color:"var(--t4)",alignSelf:"center",marginLeft:8}}>{sorted.length} of {en.length} loans</span>
       </div>
     </div>
 
