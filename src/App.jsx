@@ -236,7 +236,7 @@ const enrich=loan=>{
 
 const f$=n=>{if(!n&&n!==0)return"—";if(Math.abs(n)>=1e6)return`$${(n/1e6).toFixed(2)}M`;if(Math.abs(n)>=1e3)return`$${(n/1e3).toFixed(0)}K`;return`$${Math.round(n).toLocaleString()}`;};
 // Full payment format: $85,828.44 — always show full number with 2 decimal cents
-const fPmt=n=>{if(!n&&n!==0)return"—";return"$"+Math.abs(n).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});;
+const fPmt=n=>{if(!n&&n!==0)return"—";return"$"+Math.abs(n).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});};
 const fPct=n=>n!=null&&n!==""?`${Number(n).toFixed(3)}%`:"—";
 const fDate=s=>s?new Date(s).toLocaleDateString("en-US",{month:"long",year:"numeric"}):"—";
 const fDateS=s=>s?new Date(s).toLocaleDateString("en-US",{month:"short",year:"numeric"}):"—";
