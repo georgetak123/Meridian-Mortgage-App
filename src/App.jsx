@@ -38,6 +38,9 @@ const LOANS_INIT=[];
 const CSS=`
 @import url('https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+html{height:100%;width:100%;}
+body{height:100%;width:100%;background:var(--bg);color:var(--t1);font-family:var(--f);font-size:13px;-webkit-font-smoothing:antialiased;overflow:hidden;}
+#root,#__next,[data-reactroot]{height:100%;width:100%;display:flex;flex-direction:column;}
 :root{
   --bg:#f4f6f9;
   --white:#fff;
@@ -61,7 +64,6 @@ const CSS=`
   --sb-acc:#3b82f6;
   --f:'Inter',system-ui,sans-serif;
 }
-body{background:var(--bg);color:var(--t1);font-family:var(--f);font-size:13px;-webkit-font-smoothing:antialiased;}
 button{font-family:var(--f);cursor:pointer;}
 input,select,textarea{font-family:var(--f);}
 ::-webkit-scrollbar{width:5px;height:5px;}
@@ -69,7 +71,7 @@ input,select,textarea{font-family:var(--f);}
 ::-webkit-scrollbar-thumb{background:rgba(0,0,0,.15);border-radius:3px;}
 
 /* SHELL */
-.shell{display:flex;height:100vh;overflow:hidden;}
+.shell{display:flex;width:100%;height:100vh;min-height:100vh;overflow:hidden;position:fixed;top:0;left:0;right:0;bottom:0;}
 
 /* ── SIDEBAR ── */
 .sb{width:248px;flex-shrink:0;background:var(--sb);display:flex;flex-direction:column;overflow:hidden;box-shadow:2px 0 24px rgba(0,0,0,.18);}
@@ -5133,6 +5135,11 @@ export default function App(){
 
   return(<>
     <style>{CSS}</style>
+    <style>{`
+      /* Force full-page fill regardless of artifact/browser mount point */
+      body,html{height:100%!important;width:100%!important;margin:0!important;padding:0!important;overflow:hidden!important;}
+      body>div,body>div>div{height:100%!important;width:100%!important;}
+    `}</style>
     <div className="shell">
 
       {/* ── SIDEBAR ── */}
