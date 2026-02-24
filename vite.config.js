@@ -4,4 +4,8 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   base: '/Meridian-Mortgage-App/',
+  build: {
+    sourcemap: false,
+    target: 'es2015',
+  }
 })
